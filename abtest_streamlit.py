@@ -290,13 +290,16 @@ with tab_roas:
         roas_eps = simulate_epsilon_greedy(true_roas, n_rounds, epsilon, bernoulli=False, variance=0.15)
         roas_ts  = simulate_thompson_gaussian(true_roas, n_rounds, obs_var=0.15)
         roas_ab  = simulate_ab_fixed(true_roas, n_rounds, bernoulli=False, variance=0.15)
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=roas_eps, x=np.arange(n_rounds), name="ε-greedy"))
         fig.add_trace(go.Scatter(y=roas_ts,  x=np.arange(n_rounds), name="Thompson"))
-        fig.add_trace(go.Scatter(y=roas_ab,  x=np.arange(n.rounds), name="A/B (50:50)", line=dict(dash="dash")))
+        # ✅ 오타 수정: n.rounds -> n_rounds
+        fig.add_trace(go.Scatter(y=roas_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
         fig.update_layout(height=380, title="Cumulative ROAS (simulated)", xaxis_title="Round", yaxis_title="Cumulative")
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
+
 
 # ----------------------------
 # 4) 시계열 비교
@@ -325,3 +328,4 @@ st.download_button("결과 CSV 다운로드", data=csv_buf.getvalue(),
                    file_name="ab_welch_results.csv", mime="text/csv")
 
 st.success("✅ 준비 완료 — control.csv / test.csv 있는 폴더에서 실행하세요.")
+
