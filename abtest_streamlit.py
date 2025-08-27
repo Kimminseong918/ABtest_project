@@ -94,29 +94,45 @@ def get_true_means(control, test, metric):
     return {"Control": mu_c, "Test": mu_t}
 
 # -----------------------------
-# 클릭=100% 퍼널 전환율용 자동 컬럼 탐색 (개선)
+# Click=100% 퍼널 전환율용 자동 컬럼 탐색 (강화판)
 # -----------------------------
-CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks"]
+import re
+
+CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks",
+                  "websiteclicks", "totalclicks"]
 CONTENT_CANDS  = ["Content", "View Content", "ViewContent", "Content Views", "View_Content",
-                  "content", "view content", "view_content"]
+                  "viewcontent", "contentviews", "contentview", "view_contents", "view_contents",
+                  "content_view", "content"]
 CART_CANDS     = ["Cart", "Add to Cart", "AddToCart", "ATC", "Cart Adds", "Add_To_Cart",
-                  "cart", "add to cart", "add_to_cart"]
+                  "addtocart", "cartadds", "addcart", "cartadd", "atc", "cart"]
 PURCHASE_CANDS = ["# of Purchase", "Purchases", "Purchase", "Orders",
-                  "purchases", "orders"]
+                  "purchase", "purchases", "order", "orders"]
 
 def _norm(s: str) -> str:
-    # 소문자 + 공백/언더스코어 제거
-    return str(s).lower().replace(" ", "").replace("_", "")
+    # 소문자 + 영숫자만 남김 (하이픈/공백/언더스코어/괄호 등 제거)
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
-def _pick_first(df: pd.DataFrame, cands):
-    # df의 실제 컬럼명을 정규화 키와 매핑
+def _pick_first(df: pd.DataFrame, cand_list):
+    # 1) 정규화 맵
     norm_map = {_norm(col): col for col in df.columns}
-    for cand in cands:
+
+    # 2) 우선: cand와 정규화한 값이 '정확히' 일치하는 컬럼 찾기
+    for cand in cand_list:
         key = _norm(cand)
         if key in norm_map:
             return norm_map[key]
-    # 혹시 후보가 정확히 일치하면 그걸 사용
-    for cand in cands:
+
+    # 3) 다음: '부분 포함' 매칭 (cand가 더 짧을 때도 매칭되게 쌍방 검증)
+    norm_cols = list(norm_map.keys())
+    for cand in cand_list:
+        k = _norm(cand)
+        # cand ⊆ col  또는  col ⊆ cand
+        for nc in norm_cols:
+            if (k and (k in nc or nc in k)) and norm_map[nc] in df.columns:
+                return norm_map[nc]
+
+    # 4) 마지막: 원문 그대로 일치하면 사용
+    for cand in cand_list:
         if cand in df.columns:
             return cand
     return None
@@ -128,7 +144,7 @@ def _resolve_stages(df):
         "cart":     _pick_first(df, CART_CANDS),
         "purchase": _pick_first(df, PURCHASE_CANDS),
     }
-    missing = [k for k,v in cols.items() if v is None]
+    missing = [k for k, v in cols.items() if v is None]
     return cols, missing
 
 def _click_based_rates(df):
@@ -148,6 +164,7 @@ def _click_based_rates(df):
         "Purchase": float(pd.to_numeric(df[cols["purchase"]], errors="coerce").sum(skipna=True)  / s_click * 100.0),
     }
     return rates, []
+
 
 # -----------------------------
 # MAB 시뮬레이터(기존)
@@ -404,3 +421,4 @@ if "Date" in control.columns and "Date" in test.columns:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.caption("시계열 그래프는 Date 컬럼이 있을 때 표시됩니다.")
+
