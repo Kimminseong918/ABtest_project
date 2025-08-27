@@ -24,7 +24,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    # Date
+    # Date 열 통일
     for c in ["Date","DATE","date","ds","Day","day","DATE_TZ"]:
         if c in df.columns:
             try:
@@ -34,7 +34,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
 
-    # Derived metrics
+    # 파생 지표 채우기
     if "CTR" not in df.columns and {"# of Website Clicks", "# of Impressions"} <= set(df.columns):
         df["CTR"] = safe_div(df["# of Website Clicks"], df["# of Impressions"])
     if "CVR" not in df.columns and {"# of Purchase", "# of Website Clicks"} <= set(df.columns):
@@ -46,36 +46,46 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
             df["Revenue"] = pd.to_numeric(df["Spend [USD]"], errors="coerce") * pd.to_numeric(df.get("ROAS"), errors="coerce")
     if "ROAS" not in df.columns and {"Revenue","Spend [USD]"} <= set(df.columns):
         df["ROAS"] = safe_div(df["Revenue"], df["Spend [USD]"])
-    if "CPA" not in df.columns and {"Spend [USD]", "# of Purchase"} <= set(df.columns):
-        df["CPA"] = safe_div(df["Spend [USD]"], df["# of Purchase"])
     if "Frequency" not in df.columns and {"# of Impressions","Reach"} <= set(df.columns):
         df["Frequency"] = safe_div(df["# of Impressions"], df["Reach"])
+    # CPA는 이번 버전에서 사용하지 않지만, 데이터에 있으면 보존됩니다.
     return df
 
-def welch(a, b, alpha=0.05):
+# --- Welch t-test: 250827.py와 동일 로직(풀드 표준편차로 Hedges' g, 95% CI 고정) ---
+def welch(a, b):
     a = pd.to_numeric(pd.Series(a), errors="coerce").dropna().values
     b = pd.to_numeric(pd.Series(b), errors="coerce").dropna().values
+
+    # Welch t-test
     t, p = stats.ttest_ind(a, b, equal_var=False)
+
+    # 표본 크기/평균/분산
     n1, n2 = len(a), len(b)
     m1, m2 = a.mean(), b.mean()
     v1, v2 = a.var(ddof=1), b.var(ddof=1)
-    # Hedges' g
-    sp = np.sqrt(((n1-1)*v1 + (n2-1)*v2) / max(n1+n2-2, 1))
-    d = (m1-m2)/sp if (sp and sp > 0) else np.nan
-    J = 1 - (3/(4*(n1+n2)-9)) if (n1+n2) > 2 else 1.0
-    g = d*J
-    # Welch–Satterthwaite CI (95%)
-    se = np.sqrt(v1/n1 + v2/n2) if (n1>1 and n2>1) else np.nan
+
+    # Hedges' g (pooled SD)
+    sp = np.sqrt(((n1-1)*v1 + (n2-1)*v2) / (n1+n2-2)) if (n1+n2-2) > 0 else np.nan
+    d  = (m1 - m2) / sp if (sp and sp > 0) else np.nan
+    J  = 1 - (3/(4*(n1+n2) - 9)) if (n1+n2) > 2 else 1.0
+    g  = d * J
+
+    # 95% CI (Welch–Satterthwaite)
+    se     = np.sqrt(v1/n1 + v2/n2) if (n1>1 and n2>1) else np.nan
     df_num = (v1/n1 + v2/n2)**2
     df_den = (v1**2/(n1**2*(n1-1))) + (v2**2/(n2**2*(n2-1))) if (n1>1 and n2>1) else np.nan
-    dof = df_num/df_den if isinstance(df_den, (float, np.floating)) and df_den>0 else np.nan
+    dof    = df_num/df_den if isinstance(df_den, (float, np.floating)) and df_den>0 else np.nan
     if np.isfinite(se) and np.isfinite(dof):
-        crit = stats.t.ppf(0.975, dof)
+        crit = stats.t.ppf(0.975, dof)  # 95%
         ci_low, ci_high = (m1-m2) - crit*se, (m1-m2) + crit*se
     else:
         ci_low = ci_high = np.nan
-    return dict(mean_test=m1, mean_control=m2, diff=m1-m2, p_value=p,
-                t_stat=t, hedges_g=g, ci_low=ci_low, ci_high=ci_high)
+
+    return dict(
+        mean_test=m1, mean_control=m2,
+        diff=m1-m2, p_value=p, t_stat=t,
+        hedges_g=g, ci_low=ci_low, ci_high=ci_high
+    )
 
 # -------- MAB helpers --------
 RNG = np.random.default_rng(7)
@@ -156,7 +166,7 @@ control = prepare_df(pd.read_csv(CTRL_PATH))
 test    = prepare_df(pd.read_csv(TEST_PATH))
 
 # ----------------------------
-# KPI cards  (Order: Revenue, ROAS, Frequency, CTR, CVR)
+# KPI cards  (Order: Revenue, ROAS, Frequency, CTR, CVR; CPA 제외)
 # ----------------------------
 st.title("A/B Test Dashboard + MAB")
 
@@ -170,15 +180,15 @@ for i, label in enumerate(kpi_list):
         cols[i].metric(label, f"{t:,.4g}", f"{delta:+.1f}% vs Control")
 
 # ----------------------------
-# 1) Welch t-test (Order aligned with KPI)
+# 1) Welch t-test (정렬 + 유의미 하이라이트)  — 250827.py 로직 반영
 # ----------------------------
 st.header("1) 기본 가설 검정 (Welch t-test)")
 
-metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]  # CPA 제거 + 순서 변경
+metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]  # CPA 제거 + 요청 순서
 rows = []
 for m in metrics_order:
     if m in control.columns and m in test.columns:
-        res = welch(test[m], control[m], alpha=0.05)  # 95% CI
+        res = welch(test[m], control[m])  # 95% CI 고정
         rows.append(dict(Metric=m,
                          **{"Control mean":res["mean_control"], "Test mean":res["mean_test"]},
                          **{"Δ(Test-Control)":res["diff"], "p-value":res["p_value"], "Hedges g":res["hedges_g"],
@@ -204,7 +214,7 @@ styled = (res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-valu
 st.dataframe(styled, use_container_width=True)
 
 # ----------------------------
-# 2) 퍼널 분석
+# 2) 퍼널 분석 (절대 합계 + 250827.py 스타일 퍼널 플로우)
 # ----------------------------
 st.header("2) 퍼널 분석")
 
@@ -216,6 +226,7 @@ def stage_totals(df):
     if "Revenue" in df.columns: d["Revenue"] = pd.to_numeric(df["Revenue"], errors="coerce").sum()
     return d
 
+# 누적 절대치 막대
 ctrl_stage = stage_totals(control); test_stage = stage_totals(test)
 st.caption("스테이지 누적값 비교 (절대치)")
 
@@ -229,22 +240,48 @@ bar.add_trace(go.Bar(y=stages, x=test_vals,  name="Test", orientation="h"))
 bar.update_layout(barmode="group", height=420, title="Funnel (absolute totals)", xaxis_title="Counts / $")
 st.plotly_chart(bar, use_container_width=True)
 
-st.caption("CTR→CVR→Revenue 흐름(Revenue 정규화)")
+# --- 250827.py 스타일 퍼널 플로우 (CTR → CVR → Revenue/10000) ---
+st.caption("CTR→CVR→Revenue 흐름 (Revenue 1/10,000 정규화, 라벨 포맷 일치)")
+
 steps = [s for s in ["CTR","CVR","Revenue"] if s in res_df["Metric"].values]
 if steps:
+    # Welch 표에서 평균 추출
     mean_ctrl = [float(res_df.loc[res_df['Metric']==s, "Control mean"].iloc[0]) for s in steps]
-    mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0]) for s in steps]
+    mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0])     for s in steps]
+
+    # Revenue만 1/10000로 스케일(표시는 원래 값으로 라벨링)
     if "Revenue" in steps:
         i = steps.index("Revenue")
-        scaler = max(mean_ctrl[i], mean_test[i]) if max(mean_ctrl[i], mean_test[i]) else 1.0
-        mean_ctrl[i] = mean_ctrl[i] / scaler if scaler else mean_ctrl[i]
-        mean_test[i] = mean_test[i] / scaler if scaler else mean_test[i]
-    f = go.Figure()
-    f.add_trace(go.Scatter(x=mean_ctrl, y=steps, mode="lines+markers", name="Control"))
-    f.add_trace(go.Scatter(x=mean_test, y=steps, mode="lines+markers", name="Test"))
-    f.update_layout(height=340, title="Funnel Flow: CTR → CVR → Revenue (normalized)",
-                    xaxis_title="Relative scale", yaxis=dict(autorange="reversed"))
-    st.plotly_chart(f, use_container_width=True)
+        mean_ctrl[i] = mean_ctrl[i] / 10000.0
+        mean_test[i] = mean_test[i] / 10000.0
+
+    # 라벨 포맷: CTR/CVR은 소수 셋째 자리, Revenue는 정수(정규화 전 값)
+    def _lab(v, name):
+        if name == "Revenue":
+            return f"{v*10000:.0f}"  # 정규화 전 원값
+        return f"{v:.3f}"
+
+    labels_ctrl = [_lab(v, s) for v, s in zip(mean_ctrl, steps)]
+    labels_test = [_lab(v, s) for v, s in zip(mean_test, steps)]
+
+    # Plotly 라인+마커+텍스트
+    y_idx = list(range(len(steps)))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=mean_ctrl, y=y_idx, mode="lines+markers+text",
+                             name="Control", text=labels_ctrl, textposition="top center",
+                             line=dict(color="gray")))
+    fig.add_trace(go.Scatter(x=mean_test, y=y_idx, mode="lines+markers+text",
+                             name="Test", text=labels_test, textposition="bottom center",
+                             line=dict(color="royalblue")))
+    fig.update_yaxes(tickmode="array", tickvals=y_idx,
+                     ticktext=[f"{s} (norm)" if s=="Revenue" else s for s in steps],
+                     autorange="reversed")
+    fig.update_layout(height=340,
+                      title="Funnel Flow: CTR → CVR → Revenue",
+                      xaxis_title="Relative scale (Revenue normalized by 10,000)",
+                      legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98),
+                      xaxis=dict(showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.08)"))
+    st.plotly_chart(fig, use_container_width=True)
 
 # ----------------------------
 # 3) 멀티암 밴딧 시뮬레이터
@@ -318,4 +355,5 @@ if "Date" in control.columns and "Date" in test.columns:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.caption("시계열 그래프는 Date 컬럼이 있을 때 표시됩니다.")
+
 
