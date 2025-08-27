@@ -9,6 +9,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
+# ✅ 추가: Matplotlib (퍼널 절대값 그래프용)
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
+
 st.set_page_config(page_title="A/B Test Dashboard + MAB", layout="wide")
 
 # ----------------------------
@@ -34,7 +38,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
 
-    # 파생 지표 채우기
+    # 파생 지표 생성
     if "CTR" not in df.columns and {"# of Website Clicks", "# of Impressions"} <= set(df.columns):
         df["CTR"] = safe_div(df["# of Website Clicks"], df["# of Impressions"])
     if "CVR" not in df.columns and {"# of Purchase", "# of Website Clicks"} <= set(df.columns):
@@ -48,10 +52,9 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
         df["ROAS"] = safe_div(df["Revenue"], df["Spend [USD]"])
     if "Frequency" not in df.columns and {"# of Impressions","Reach"} <= set(df.columns):
         df["Frequency"] = safe_div(df["# of Impressions"], df["Reach"])
-    # CPA는 이번 버전에서 사용하지 않지만, 데이터에 있으면 보존됩니다.
     return df
 
-# --- Welch t-test: 250827.py와 동일 로직(풀드 표준편차로 Hedges' g, 95% CI 고정) ---
+# --- Welch t-test (250827.py 동일 로직) ---
 def welch(a, b):
     a = pd.to_numeric(pd.Series(a), errors="coerce").dropna().values
     b = pd.to_numeric(pd.Series(b), errors="coerce").dropna().values
@@ -180,15 +183,15 @@ for i, label in enumerate(kpi_list):
         cols[i].metric(label, f"{t:,.4g}", f"{delta:+.1f}% vs Control")
 
 # ----------------------------
-# 1) Welch t-test (정렬 + 유의미 하이라이트)  — 250827.py 로직 반영
+# 1) Welch t-test (정렬 + 유의미 하이라이트)
 # ----------------------------
 st.header("1) 기본 가설 검정 (Welch t-test)")
 
-metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]  # CPA 제거 + 요청 순서
+metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]  # CPA 제외 + 요청 순서
 rows = []
 for m in metrics_order:
     if m in control.columns and m in test.columns:
-        res = welch(test[m], control[m])  # 95% CI 고정
+        res = welch(test[m], control[m])  # 95% CI
         rows.append(dict(Metric=m,
                          **{"Control mean":res["mean_control"], "Test mean":res["mean_test"]},
                          **{"Δ(Test-Control)":res["diff"], "p-value":res["p_value"], "Hedges g":res["hedges_g"],
@@ -214,7 +217,7 @@ styled = (res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-valu
 st.dataframe(styled, use_container_width=True)
 
 # ----------------------------
-# 2) 퍼널 분석 (절대 합계 + 250827.py 스타일 퍼널 플로우)
+# 2) 퍼널 분석
 # ----------------------------
 st.header("2) 퍼널 분석")
 
@@ -226,62 +229,93 @@ def stage_totals(df):
     if "Revenue" in df.columns: d["Revenue"] = pd.to_numeric(df["Revenue"], errors="coerce").sum()
     return d
 
-# 누적 절대치 막대
-ctrl_stage = stage_totals(control); test_stage = stage_totals(test)
-st.caption("스테이지 누적값 비교 (절대치)")
-
+ctrl_stage = stage_totals(control)
+test_stage = stage_totals(test)
 stages = ["Impressions","Clicks","Purchases","Revenue"]
 ctrl_vals = [ctrl_stage.get(s, np.nan) for s in stages]
 test_vals = [test_stage.get(s, np.nan) for s in stages]
 
-bar = go.Figure()
-bar.add_trace(go.Bar(y=stages, x=ctrl_vals, name="Control", orientation="h"))
-bar.add_trace(go.Bar(y=stages, x=test_vals,  name="Test", orientation="h"))
-bar.update_layout(barmode="group", height=420, title="Funnel (absolute totals)", xaxis_title="Counts / $")
-st.plotly_chart(bar, use_container_width=True)
+# ✅ (A) 절대값 막대: Matplotlib 버전 (요청하신 디자인)
+st.subheader("Funnel (absolute totals)")
+fig, ax = plt.subplots(figsize=(12, 7), constrained_layout=True)
 
-# --- 250827.py 스타일 퍼널 플로우 (CTR → CVR → Revenue/10000) ---
+# y 위치(위→아래 정렬)
+y = np.arange(len(stages))[::-1]
+bar_h = 0.36
+offset = 0.18
+
+# 두 그룹 막대
+b1 = ax.barh(y + offset, ctrl_vals[::-1], height=bar_h, label="Control")
+b2 = ax.barh(y - offset, test_vals[::-1],  height=bar_h, label="Test")
+
+# x축: 천단위 포맷, 여백
+ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x):,}"))
+xmax = np.nanmax([np.nanmax(ctrl_vals), np.nanmax(test_vals)])
+ax.set_xlim(0, xmax * 1.12)
+
+# y축 라벨
+ax.set_yticks(y)
+ax.set_yticklabels(stages[::-1])
+
+# 얇은 세로 그리드
+ax.grid(axis="x", linestyle=":", alpha=0.4)
+
+# 축/제목/범례
+ax.set_xlabel("Counts / $")
+ax.set_title("Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
+
+# 막대 끝 숫자 표시
+def add_labels(bars, color="black", dx=0.01):
+    for rect in bars:
+        w = rect.get_width()
+        ymid = rect.get_y() + rect.get_height()/2
+        ax.text(w + xmax*dx, ymid, f"{int(round(w)):,}", va="center", ha="left",
+                fontsize=10, color=color)
+
+add_labels(b1, color="black", dx=0.008)
+add_labels(b2, color="black", dx=0.008)
+
+# 범례: 오른쪽 밖
+ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.02), frameon=False)
+
+st.pyplot(fig)
+
+# ✅ (B) 퍼널 플로우: CTR → CVR → Revenue(정규화, 250827.py 스타일)
 st.caption("CTR→CVR→Revenue 흐름 (Revenue 1/10,000 정규화, 라벨 포맷 일치)")
 
 steps = [s for s in ["CTR","CVR","Revenue"] if s in res_df["Metric"].values]
 if steps:
-    # Welch 표에서 평균 추출
     mean_ctrl = [float(res_df.loc[res_df['Metric']==s, "Control mean"].iloc[0]) for s in steps]
     mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0])     for s in steps]
 
-    # Revenue만 1/10000로 스케일(표시는 원래 값으로 라벨링)
     if "Revenue" in steps:
         i = steps.index("Revenue")
         mean_ctrl[i] = mean_ctrl[i] / 10000.0
         mean_test[i] = mean_test[i] / 10000.0
 
-    # 라벨 포맷: CTR/CVR은 소수 셋째 자리, Revenue는 정수(정규화 전 값)
     def _lab(v, name):
-        if name == "Revenue":
-            return f"{v*10000:.0f}"  # 정규화 전 원값
-        return f"{v:.3f}"
+        return f"{v:.3f}" if name != "Revenue" else f"{v*10000:.0f}"
 
     labels_ctrl = [_lab(v, s) for v, s in zip(mean_ctrl, steps)]
     labels_test = [_lab(v, s) for v, s in zip(mean_test, steps)]
 
-    # Plotly 라인+마커+텍스트
     y_idx = list(range(len(steps)))
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=mean_ctrl, y=y_idx, mode="lines+markers+text",
-                             name="Control", text=labels_ctrl, textposition="top center",
-                             line=dict(color="gray")))
-    fig.add_trace(go.Scatter(x=mean_test, y=y_idx, mode="lines+markers+text",
-                             name="Test", text=labels_test, textposition="bottom center",
-                             line=dict(color="royalblue")))
-    fig.update_yaxes(tickmode="array", tickvals=y_idx,
-                     ticktext=[f"{s} (norm)" if s=="Revenue" else s for s in steps],
-                     autorange="reversed")
-    fig.update_layout(height=340,
-                      title="Funnel Flow: CTR → CVR → Revenue",
-                      xaxis_title="Relative scale (Revenue normalized by 10,000)",
-                      legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98),
-                      xaxis=dict(showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.08)"))
-    st.plotly_chart(fig, use_container_width=True)
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(x=mean_ctrl, y=y_idx, mode="lines+markers+text",
+                              name="Control", text=labels_ctrl, textposition="top center",
+                              line=dict(color="gray")))
+    fig2.add_trace(go.Scatter(x=mean_test, y=y_idx, mode="lines+markers+text",
+                              name="Test", text=labels_test, textposition="bottom center",
+                              line=dict(color="royalblue")))
+    fig2.update_yaxes(tickmode="array", tickvals=y_idx,
+                      ticktext=[f"{s} (norm)" if s=="Revenue" else s for s in steps],
+                      autorange="reversed")
+    fig2.update_layout(height=340,
+                       title="Funnel Flow: CTR → CVR → Revenue",
+                       xaxis_title="Relative scale (Revenue normalized by 10,000)",
+                       legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98),
+                       xaxis=dict(showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.08)"))
+    st.plotly_chart(fig2, use_container_width=True)
 
 # ----------------------------
 # 3) 멀티암 밴딧 시뮬레이터
@@ -346,7 +380,7 @@ if "Date" in control.columns and "Date" in test.columns:
     metric_ts = st.selectbox(
         "시계열로 볼 지표",
         [m for m in ["CTR","CVR","Revenue","ROAS","# of Impressions","# of Website Clicks","# of Purchase"]
-         if m in control.columns and m in test.columns]  # CPA 제외
+         if m in control.columns and m in test.columns]
     )
     ctrl_daily = control.groupby("Date")[metric_ts].mean().rename("Control")
     test_daily = test.groupby("Date")[metric_ts].mean().rename("Test")
