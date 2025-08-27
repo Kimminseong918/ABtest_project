@@ -101,37 +101,31 @@ import re
 CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks",
                   "websiteclicks", "totalclicks"]
 CONTENT_CANDS  = ["Content", "View Content", "ViewContent", "Content Views", "View_Content",
-                  "viewcontent", "contentviews", "contentview", "view_contents", "view_contents",
-                  "content_view", "content"]
+                  "viewcontent", "contentviews", "contentview", "view_contents", "content_view", "content"]
 CART_CANDS     = ["Cart", "Add to Cart", "AddToCart", "ATC", "Cart Adds", "Add_To_Cart",
                   "addtocart", "cartadds", "addcart", "cartadd", "atc", "cart"]
 PURCHASE_CANDS = ["# of Purchase", "Purchases", "Purchase", "Orders",
                   "purchase", "purchases", "order", "orders"]
 
 def _norm(s: str) -> str:
-    # 소문자 + 영숫자만 남김 (하이픈/공백/언더스코어/괄호 등 제거)
+    # 소문자 + 영숫자만 남김
     return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 def _pick_first(df: pd.DataFrame, cand_list):
-    # 1) 정규화 맵
     norm_map = {_norm(col): col for col in df.columns}
-
-    # 2) 우선: cand와 정규화한 값이 '정확히' 일치하는 컬럼 찾기
+    # 1) 정확 일치
     for cand in cand_list:
         key = _norm(cand)
         if key in norm_map:
             return norm_map[key]
-
-    # 3) 다음: '부분 포함' 매칭 (cand가 더 짧을 때도 매칭되게 쌍방 검증)
+    # 2) 부분 포함
     norm_cols = list(norm_map.keys())
     for cand in cand_list:
         k = _norm(cand)
-        # cand ⊆ col  또는  col ⊆ cand
         for nc in norm_cols:
-            if (k and (k in nc or nc in k)) and norm_map[nc] in df.columns:
+            if k and (k in nc or nc in k):
                 return norm_map[nc]
-
-    # 4) 마지막: 원문 그대로 일치하면 사용
+    # 3) 원문 일치
     for cand in cand_list:
         if cand in df.columns:
             return cand
@@ -151,7 +145,6 @@ def _click_based_rates(df):
     cols, missing = _resolve_stages(df)
     if missing:
         return None, missing
-    # 숫자 변환 및 합계
     for c in cols.values():
         df[c] = pd.to_numeric(df[c], errors="coerce")
     s_click = pd.to_numeric(df[cols["clicks"]], errors="coerce").sum(skipna=True)
@@ -165,9 +158,8 @@ def _click_based_rates(df):
     }
     return rates, []
 
-
 # -----------------------------
-# MAB 시뮬레이터(기존)
+# MAB 시뮬레이터
 # -----------------------------
 def simulate_epsilon_greedy(true_means, n_rounds, epsilon, bernoulli=True, variance=0.1):
     arms = list(true_means.keys())
@@ -289,7 +281,6 @@ else:
 # -----------------------------
 st.header("2) 퍼널 분석")
 
-# 2-A) 클릭=100% 기준 전환율 막대그래프
 st.subheader("2-A) Funnel Conversion (Click = 100%)")
 ctrl_rates, miss1 = _click_based_rates(control)
 test_rates, miss2 = _click_based_rates(test)
@@ -321,75 +312,36 @@ else:
     )
     st.plotly_chart(fig_fc, use_container_width=True)
 
-# 2-B) Funnel Flow (평균 기반)
-st.subheader("2-B) Funnel Flow (평균 기반, Revenue 1/10,000 정규화)")
-steps = [s for s in ["CTR","CVR","Revenue"] if not res_df.empty and s in res_df["Metric"].values]
-if steps:
-    mean_ctrl = [float(res_df.loc[res_df['Metric']==s, "Control mean"].iloc[0]) for s in steps]
-    mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0])     for s in steps]
-    if "Revenue" in steps:
-        i = steps.index("Revenue")
-        mean_ctrl[i] /= 10000.0
-        mean_test[i] /= 10000.0
-    def _lab(v, name): return f"{v:.3f}" if name!="Revenue" else f"{v*10000:.0f}"
-    labels_ctrl = [_lab(v, s) for v, s in zip(mean_ctrl, steps)]
-    labels_test = [_lab(v, s) for v, s in zip(mean_test, steps)]
-    yy = list(range(len(steps)))
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=mean_ctrl, y=yy, mode="lines+markers+text",
-                              name="Control", text=labels_ctrl, textposition="top center",
-                              line=dict(color="gray")))
-    fig2.add_trace(go.Scatter(x=mean_test, y=yy, mode="lines+markers+text",
-                              name="Test", text=labels_test, textposition="bottom center",
-                              line=dict(color="royalblue")))
-    fig2.update_yaxes(tickmode="array", tickvals=yy,
-                      ticktext=[f"{s} (norm)" if s=="Revenue" else s for s in steps],
-                      autorange="reversed")
-    fig2.update_layout(height=340, title="Funnel Flow: CTR → CVR → Revenue",
-                       xaxis_title="Relative scale (Revenue normalized by 10,000)",
-                       legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98))
-    st.plotly_chart(fig2, use_container_width=True)
-else:
-    st.caption("CTR/CVR/Revenue 평균이 있어야 Funnel Flow를 그릴 수 있습니다.")
-
 # -----------------------------
-# 3) MAB 시뮬레이터
+# 3) 멀티암 밴딧 시뮬레이터 (Revenue & ROAS 중심)
 # -----------------------------
 st.header("3) 멀티암 밴딧 시뮬레이터")
 with st.expander("시뮬레이션 옵션", expanded=True):
     n_rounds = st.slider("Rounds", 200, 5000, 2000, 100)
     epsilon  = st.slider("ε (epsilon-greedy)", 0.00, 0.50, 0.10, 0.01)
 
-tab_ctr, tab_cvr, tab_roas = st.tabs(["CTR (Clicks)", "CVR (Conversions)", "ROAS"])
+# 탭 구성: Revenue, ROAS, CTR(참고)
+tab_rev, tab_roas, tab_ctr = st.tabs(["Revenue", "ROAS", "CTR (Clicks)"])
 
-with tab_ctr:
-    if {"CTR"} <= set(control.columns) and {"CTR"} <= set(test.columns):
-        true_ctr = get_true_means(control, test, "CTR")
-        ctr_eps = simulate_epsilon_greedy(true_ctr, n_rounds, epsilon, bernoulli=True)
-        ctr_ts  = simulate_thompson_bernoulli(true_ctr, n_rounds)
-        ctr_ab  = simulate_ab_fixed(true_ctr, n_rounds, bernoulli=True)
+# Revenue (연속형 보상)
+with tab_rev:
+    if {"Revenue"} <= set(control.columns) and {"Revenue"} <= set(test.columns):
+        true_rev = get_true_means(control, test, "Revenue")
+        # 연속형 보상 시뮬레이션: ε-greedy / Thompson Gaussian / 고정 A/B
+        rev_eps = simulate_epsilon_greedy(true_rev, n_rounds, epsilon, bernoulli=False, variance=0.20)
+        rev_ts  = simulate_thompson_gaussian(true_rev, n_rounds, obs_var=0.20)
+        rev_ab  = simulate_ab_fixed(true_rev, n_rounds, bernoulli=False, variance=0.20)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(y=ctr_eps, x=np.arange(n_rounds), name="ε-greedy"))
-        fig.add_trace(go.Scatter(y=ctr_ts,  x=np.arange(n_rounds), name="Thompson"))
-        fig.add_trace(go.Scatter(y=ctr_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
-        fig.update_layout(height=380, title="Cumulative Clicks", xaxis_title="Round", yaxis_title="Cumulative")
+        fig.add_trace(go.Scatter(y=rev_eps, x=np.arange(n_rounds), name="ε-greedy"))
+        fig.add_trace(go.Scatter(y=rev_ts,  x=np.arange(n_rounds), name="Thompson"))
+        fig.add_trace(go.Scatter(y=rev_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
+        fig.update_layout(height=380, title="Cumulative Revenue (simulated)", xaxis_title="Round", yaxis_title="Cumulative")
         st.plotly_chart(fig, use_container_width=True)
-        st.caption(f"Control CTR ≈ {true_ctr['Control']:.4f}, Test CTR ≈ {true_ctr['Test']:.4f}")
+        st.caption(f"Control Revenue ≈ {true_rev['Control']:.3g}, Test Revenue ≈ {true_rev['Test']:.3g}")
+    else:
+        st.info("Revenue 컬럼이 양 실험군 모두에 있어야 Revenue 시뮬레이션을 그릴 수 있습니다.")
 
-with tab_cvr:
-    if {"CVR"} <= set(control.columns) and {"CVR"} <= set(test.columns):
-        true_cvr = get_true_means(control, test, "CVR")
-        cvr_eps = simulate_epsilon_greedy(true_cvr, n_rounds, epsilon, bernoulli=True)
-        cvr_ts  = simulate_thompson_bernoulli(true_cvr, n_rounds)
-        cvr_ab  = simulate_ab_fixed(true_cvr, n_rounds, bernoulli=True)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(y=cvr_eps, x=np.arange(n_rounds), name="ε-greedy"))
-        fig.add_trace(go.Scatter(y=cvr_ts,  x=np.arange(n_rounds), name="Thompson"))
-        fig.add_trace(go.Scatter(y=cvr_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
-        fig.update_layout(height=380, title="Cumulative Conversions", xaxis_title="Round", yaxis_title="Cumulative")
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(f"Control CVR ≈ {true_cvr['Control']:.4f}, Test CVR ≈ {true_cvr['Test']:.4f}")
-
+# ROAS (연속형 보상)
 with tab_roas:
     if {"ROAS"} <= set(control.columns) and {"ROAS"} <= set(test.columns):
         true_roas = get_true_means(control, test, "ROAS")
@@ -403,6 +355,25 @@ with tab_roas:
         fig.update_layout(height=380, title="Cumulative ROAS (simulated)", xaxis_title="Round", yaxis_title="Cumulative")
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
+    else:
+        st.info("ROAS 컬럼이 양 실험군 모두에 있어야 ROAS 시뮬레이션을 그릴 수 있습니다.")
+
+# CTR (참고용, 베르누이 보상)
+with tab_ctr:
+    if {"CTR"} <= set(control.columns) and {"CTR"} <= set(test.columns):
+        true_ctr = get_true_means(control, test, "CTR")
+        ctr_eps = simulate_epsilon_greedy(true_ctr, n_rounds, epsilon, bernoulli=True)
+        ctr_ts  = simulate_thompson_bernoulli(true_ctr, n_rounds)
+        ctr_ab  = simulate_ab_fixed(true_ctr, n_rounds, bernoulli=True)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=ctr_eps, x=np.arange(n_rounds), name="ε-greedy"))
+        fig.add_trace(go.Scatter(y=ctr_ts,  x=np.arange(n_rounds), name="Thompson"))
+        fig.add_trace(go.Scatter(y=ctr_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
+        fig.update_layout(height=380, title="Cumulative Clicks", xaxis_title="Round", yaxis_title="Cumulative")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"Control CTR ≈ {true_ctr['Control']:.4f}, Test CTR ≈ {true_ctr['Test']:.4f}")
+    else:
+        st.info("CTR 컬럼이 양 실험군 모두에 있을 때만 CTR 시뮬레이션을 표시합니다.")
 
 # -----------------------------
 # 4) 시계열 비교
@@ -421,4 +392,3 @@ if "Date" in control.columns and "Date" in test.columns:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.caption("시계열 그래프는 Date 컬럼이 있을 때 표시됩니다.")
-
