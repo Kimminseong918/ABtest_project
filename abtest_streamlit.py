@@ -7,6 +7,7 @@ from scipy import stats
 import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
+import re
 
 try:
     import matplotlib.pyplot as plt
@@ -94,10 +95,8 @@ def get_true_means(control, test, metric):
     return {"Control": mu_c, "Test": mu_t}
 
 # -----------------------------
-# Click=100% 퍼널 전환율용 자동 컬럼 탐색 (강화판)
+# 클릭=100% 퍼널 전환율용 자동 컬럼 탐색 (강화판)
 # -----------------------------
-import re
-
 CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks",
                   "websiteclicks", "totalclicks"]
 CONTENT_CANDS  = ["Content", "View Content", "ViewContent", "Content Views", "View_Content",
@@ -159,7 +158,7 @@ def _click_based_rates(df):
     return rates, []
 
 # -----------------------------
-# MAB 시뮬레이터
+# 시뮬레이터 (ε-greedy / Thompson / 고정 A/B)
 # -----------------------------
 def simulate_epsilon_greedy(true_means, n_rounds, epsilon, bernoulli=True, variance=0.1):
     arms = list(true_means.keys())
@@ -313,21 +312,18 @@ else:
     st.plotly_chart(fig_fc, use_container_width=True)
 
 # -----------------------------
-# 3) 멀티암 밴딧 시뮬레이터 (Revenue & ROAS 중심)
+# 3) 멀티암 밴딧 시뮬레이터 (Revenue & ROAS만)
 # -----------------------------
 st.header("3) 멀티암 밴딧 시뮬레이터")
 with st.expander("시뮬레이션 옵션", expanded=True):
     n_rounds = st.slider("Rounds", 200, 5000, 2000, 100)
     epsilon  = st.slider("ε (epsilon-greedy)", 0.00, 0.50, 0.10, 0.01)
 
-# 탭 구성: Revenue, ROAS, CTR(참고)
-tab_rev, tab_roas, tab_ctr = st.tabs(["Revenue", "ROAS", "CTR (Clicks)"])
+tab_rev, tab_roas = st.tabs(["Revenue", "ROAS"])
 
-# Revenue (연속형 보상)
 with tab_rev:
     if {"Revenue"} <= set(control.columns) and {"Revenue"} <= set(test.columns):
         true_rev = get_true_means(control, test, "Revenue")
-        # 연속형 보상 시뮬레이션: ε-greedy / Thompson Gaussian / 고정 A/B
         rev_eps = simulate_epsilon_greedy(true_rev, n_rounds, epsilon, bernoulli=False, variance=0.20)
         rev_ts  = simulate_thompson_gaussian(true_rev, n_rounds, obs_var=0.20)
         rev_ab  = simulate_ab_fixed(true_rev, n_rounds, bernoulli=False, variance=0.20)
@@ -341,7 +337,6 @@ with tab_rev:
     else:
         st.info("Revenue 컬럼이 양 실험군 모두에 있어야 Revenue 시뮬레이션을 그릴 수 있습니다.")
 
-# ROAS (연속형 보상)
 with tab_roas:
     if {"ROAS"} <= set(control.columns) and {"ROAS"} <= set(test.columns):
         true_roas = get_true_means(control, test, "ROAS")
@@ -357,23 +352,6 @@ with tab_roas:
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
     else:
         st.info("ROAS 컬럼이 양 실험군 모두에 있어야 ROAS 시뮬레이션을 그릴 수 있습니다.")
-
-# CTR (참고용, 베르누이 보상)
-with tab_ctr:
-    if {"CTR"} <= set(control.columns) and {"CTR"} <= set(test.columns):
-        true_ctr = get_true_means(control, test, "CTR")
-        ctr_eps = simulate_epsilon_greedy(true_ctr, n_rounds, epsilon, bernoulli=True)
-        ctr_ts  = simulate_thompson_bernoulli(true_ctr, n_rounds)
-        ctr_ab  = simulate_ab_fixed(true_ctr, n_rounds, bernoulli=True)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(y=ctr_eps, x=np.arange(n_rounds), name="ε-greedy"))
-        fig.add_trace(go.Scatter(y=ctr_ts,  x=np.arange(n_rounds), name="Thompson"))
-        fig.add_trace(go.Scatter(y=ctr_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
-        fig.update_layout(height=380, title="Cumulative Clicks", xaxis_title="Round", yaxis_title="Cumulative")
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(f"Control CTR ≈ {true_ctr['Control']:.4f}, Test CTR ≈ {true_ctr['Test']:.4f}")
-    else:
-        st.info("CTR 컬럼이 양 실험군 모두에 있을 때만 CTR 시뮬레이션을 표시합니다.")
 
 # -----------------------------
 # 4) 시계열 비교
