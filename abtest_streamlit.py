@@ -1,3 +1,4 @@
+# app.py
 import io
 import numpy as np
 import pandas as pd
@@ -93,6 +94,62 @@ def get_true_means(control, test, metric):
     return {"Control": mu_c, "Test": mu_t}
 
 # -----------------------------
+# 클릭=100% 퍼널 전환율용 자동 컬럼 탐색 (개선)
+# -----------------------------
+CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks"]
+CONTENT_CANDS  = ["Content", "View Content", "ViewContent", "Content Views", "View_Content",
+                  "content", "view content", "view_content"]
+CART_CANDS     = ["Cart", "Add to Cart", "AddToCart", "ATC", "Cart Adds", "Add_To_Cart",
+                  "cart", "add to cart", "add_to_cart"]
+PURCHASE_CANDS = ["# of Purchase", "Purchases", "Purchase", "Orders",
+                  "purchases", "orders"]
+
+def _norm(s: str) -> str:
+    # 소문자 + 공백/언더스코어 제거
+    return str(s).lower().replace(" ", "").replace("_", "")
+
+def _pick_first(df: pd.DataFrame, cands):
+    # df의 실제 컬럼명을 정규화 키와 매핑
+    norm_map = {_norm(col): col for col in df.columns}
+    for cand in cands:
+        key = _norm(cand)
+        if key in norm_map:
+            return norm_map[key]
+    # 혹시 후보가 정확히 일치하면 그걸 사용
+    for cand in cands:
+        if cand in df.columns:
+            return cand
+    return None
+
+def _resolve_stages(df):
+    cols = {
+        "clicks":   _pick_first(df, CLICK_CANDS),
+        "content":  _pick_first(df, CONTENT_CANDS),
+        "cart":     _pick_first(df, CART_CANDS),
+        "purchase": _pick_first(df, PURCHASE_CANDS),
+    }
+    missing = [k for k,v in cols.items() if v is None]
+    return cols, missing
+
+def _click_based_rates(df):
+    cols, missing = _resolve_stages(df)
+    if missing:
+        return None, missing
+    # 숫자 변환 및 합계
+    for c in cols.values():
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    s_click = pd.to_numeric(df[cols["clicks"]], errors="coerce").sum(skipna=True)
+    if not np.isfinite(s_click) or s_click <= 0:
+        return None, ["clicks_sum<=0"]
+    rates = {
+        "Click":    100.0,
+        "Content":  float(pd.to_numeric(df[cols["content"]],  errors="coerce").sum(skipna=True)  / s_click * 100.0),
+        "Cart":     float(pd.to_numeric(df[cols["cart"]],     errors="coerce").sum(skipna=True)  / s_click * 100.0),
+        "Purchase": float(pd.to_numeric(df[cols["purchase"]], errors="coerce").sum(skipna=True)  / s_click * 100.0),
+    }
+    return rates, []
+
+# -----------------------------
 # MAB 시뮬레이터(기존)
 # -----------------------------
 def simulate_epsilon_greedy(true_means, n_rounds, epsilon, bernoulli=True, variance=0.1):
@@ -152,48 +209,6 @@ def simulate_ab_fixed(true_means, n_rounds, bernoulli=True, variance=0.1):
             r = float(max(RNG.normal(mu, np.sqrt(variance)), 0.0))
         total += r; cum.append(total)
     return np.array(cum)
-
-# -----------------------------
-# Click=100% 퍼널 전환율용 자동 컬럼 탐색
-# -----------------------------
-CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks"]
-CONTENT_CANDS  = ["Content", "View Content", "ViewContent", "Content Views", "View_Content"]
-CART_CANDS     = ["Cart", "Add to Cart", "AddToCart", "ATC", "Cart Adds", "Add_To_Cart"]
-PURCHASE_CANDS = ["# of Purchase", "Purchases", "Purchase", "Orders"]
-
-def _pick_first(df, cands):
-    for c in cands:
-        if c in df.columns:
-            return c
-    return None
-
-def _resolve_stages(df):
-    cols = {
-        "clicks":   _pick_first(df, CLICK_CANDS),
-        "content":  _pick_first(df, CONTENT_CANDS),
-        "cart":     _pick_first(df, CART_CANDS),
-        "purchase": _pick_first(df, PURCHASE_CANDS),
-    }
-    missing = [k for k,v in cols.items() if v is None]
-    return cols, missing
-
-def _click_based_rates(df):
-    cols, missing = _resolve_stages(df)
-    if missing:
-        return None, missing
-    # 숫자 변환 및 합계
-    for c in cols.values():
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    s_click = df[cols["clicks"]].sum()
-    if s_click <= 0:
-        return None, ["clicks_sum<=0"]
-    rates = {
-        "Click":    100.0,
-        "Content":  float(df[cols["content"]].sum() / s_click * 100.0),
-        "Cart":     float(df[cols["cart"]].sum()     / s_click * 100.0),
-        "Purchase": float(df[cols["purchase"]].sum() / s_click * 100.0),
-    }
-    return rates, []
 
 # -----------------------------
 # 데이터 로딩
@@ -257,7 +272,7 @@ else:
 # -----------------------------
 st.header("2) 퍼널 분석")
 
-# 2-A) (수정) 클릭=100% 기준 전환율 막대그래프
+# 2-A) 클릭=100% 기준 전환율 막대그래프
 st.subheader("2-A) Funnel Conversion (Click = 100%)")
 ctrl_rates, miss1 = _click_based_rates(control)
 test_rates, miss2 = _click_based_rates(test)
