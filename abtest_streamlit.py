@@ -143,9 +143,7 @@ def simulate_ab_fixed(true_means, n_rounds, bernoulli=True, variance=0.1):
         total += r; cum.append(total)
     return np.array(cum)
 
-# ----------------------------
-# 데이터 자동 로드
-# ----------------------------
+-
 CTRL_PATH = Path("control.csv")
 TEST_PATH = Path("test.csv")
 if not CTRL_PATH.exists() or not TEST_PATH.exists():
@@ -155,9 +153,7 @@ if not CTRL_PATH.exists() or not TEST_PATH.exists():
 control = prepare_df(pd.read_csv(CTRL_PATH))
 test    = prepare_df(pd.read_csv(TEST_PATH))
 
-# ----------------------------
-# KPI cards
-# ----------------------------
+
 st.title("A/B Test Dashboard + MAB")
 
 cols = st.columns(6)
@@ -169,9 +165,7 @@ for i, label in enumerate(kpi_list):
         delta = (t - c) / c * 100 if c else np.nan
         cols[i].metric(label, f"{t:,.4g}", f"{delta:+.1f}% vs Control")
 
-# ----------------------------
-# Welch t-tests (표만, 정렬+하이라이트)
-# ----------------------------
+
 st.header("1) 기본 가설 검정 (Welch t-test)")
 
 metrics_order = ["CPA","CTR","CVR","Frequency","ROAS","Revenue"]
@@ -203,9 +197,7 @@ styled = (res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-valu
 
 st.dataframe(styled, use_container_width=True)
 
-# ----------------------------
-# 2) 퍼널 분석
-# ----------------------------
+
 st.header("2) 퍼널 분석")
 
 def stage_totals(df):
@@ -246,9 +238,7 @@ if steps:
                     xaxis_title="Relative scale", yaxis=dict(autorange="reversed"))
     st.plotly_chart(f, use_container_width=True)
 
-# ----------------------------
-# 3) 멀티암 밴딧 시뮬레이터 (본문 컨트롤)
-# ----------------------------
+
 st.header("3) 멀티암 밴딧 시뮬레이터")
 with st.expander("시뮬레이션 옵션", expanded=True):
     n_rounds = st.slider("Rounds", 200, 5000, 2000, 100)
@@ -301,9 +291,7 @@ with tab_roas:
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
 
-# ----------------------------
-# 4) 시계열 비교 (Date 있을 때)
-# ----------------------------
+
 st.header("4) 시계열 비교")
 if "Date" in control.columns and "Date" in test.columns:
     metric_ts = st.selectbox(
@@ -319,12 +307,5 @@ if "Date" in control.columns and "Date" in test.columns:
 else:
     st.caption("시계열 그래프는 Date 컬럼이 있을 때 표시됩니다.")
 
-# ----------------------------
-# 5) 결과 다운로드
-# ----------------------------
-csv_buf = io.StringIO()
-res_df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
-st.download_button("결과 CSV 다운로드", data=csv_buf.getvalue(),
-                   file_name="ab_welch_results.csv", mime="text/csv")
 
-st.success("✅ 준비 완료 — control.csv / test.csv 있는 폴더에서 실행하세요.")
+
