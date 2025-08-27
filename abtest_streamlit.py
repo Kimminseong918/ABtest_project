@@ -9,10 +9,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-# ✅ 추가: Matplotlib (퍼널 절대값 그래프용)
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
-
 st.set_page_config(page_title="A/B Test Dashboard + MAB", layout="wide")
 
 # ----------------------------
@@ -28,7 +24,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    # Date 열 통일
+    # Date 통일
     for c in ["Date","DATE","date","ds","Day","day","DATE_TZ"]:
         if c in df.columns:
             try:
@@ -38,7 +34,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
 
-    # 파생 지표 생성
+    # 파생 지표
     if "CTR" not in df.columns and {"# of Website Clicks", "# of Impressions"} <= set(df.columns):
         df["CTR"] = safe_div(df["# of Website Clicks"], df["# of Impressions"])
     if "CVR" not in df.columns and {"# of Purchase", "# of Website Clicks"} <= set(df.columns):
@@ -54,7 +50,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
         df["Frequency"] = safe_div(df["# of Impressions"], df["Reach"])
     return df
 
-# --- Welch t-test (250827.py 동일 로직) ---
+# --- Welch t-test (250827.py 로직) ---
 def welch(a, b):
     a = pd.to_numeric(pd.Series(a), errors="coerce").dropna().values
     b = pd.to_numeric(pd.Series(b), errors="coerce").dropna().values
@@ -169,13 +165,12 @@ control = prepare_df(pd.read_csv(CTRL_PATH))
 test    = prepare_df(pd.read_csv(TEST_PATH))
 
 # ----------------------------
-# KPI cards  (Order: Revenue, ROAS, Frequency, CTR, CVR; CPA 제외)
+# KPI (Revenue → ROAS → Frequency → CTR → CVR)
 # ----------------------------
 st.title("A/B Test Dashboard + MAB")
 
 cols = st.columns(5)
-kpi_list = ["Revenue","ROAS","Frequency","CTR","CVR"]
-for i, label in enumerate(kpi_list):
+for i, label in enumerate(["Revenue","ROAS","Frequency","CTR","CVR"]):
     if label in control.columns and label in test.columns:
         c = float(pd.to_numeric(control[label], errors="coerce").mean())
         t = float(pd.to_numeric(test[label], errors="coerce").mean())
@@ -183,38 +178,33 @@ for i, label in enumerate(kpi_list):
         cols[i].metric(label, f"{t:,.4g}", f"{delta:+.1f}% vs Control")
 
 # ----------------------------
-# 1) Welch t-test (정렬 + 유의미 하이라이트)
+# 1) Welch t-test
 # ----------------------------
 st.header("1) 기본 가설 검정 (Welch t-test)")
-
-metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]  # CPA 제외 + 요청 순서
+metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]
 rows = []
 for m in metrics_order:
     if m in control.columns and m in test.columns:
-        res = welch(test[m], control[m])  # 95% CI
+        r = welch(test[m], control[m])
         rows.append(dict(Metric=m,
-                         **{"Control mean":res["mean_control"], "Test mean":res["mean_test"]},
-                         **{"Δ(Test-Control)":res["diff"], "p-value":res["p_value"], "Hedges g":res["hedges_g"],
-                            "CI low":res["ci_low"], "CI high":res["ci_high"]}))
-
-if not rows:
-    st.error("공통 지표가 없어 Welch 결과를 만들 수 없습니다.")
-    st.stop()
-
+                         **{"Control mean":r["mean_control"], "Test mean":r["mean_test"]},
+                         **{"Δ(Test-Control)":r["diff"], "p-value":r["p_value"], "Hedges g":r["hedges_g"],
+                            "CI low":r["ci_low"], "CI high":r["ci_high"]}))
 res_df = pd.DataFrame(rows)
 res_df["Sig"] = np.where(res_df["p-value"] < 0.05, "유의미", "")
 
 def _highlight_sig(row):
     return [("background-color:#1f5130" if row["Sig"]=="유의미" else "")]*len(row)
 
-styled = (res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-value","Hedges g","CI low","CI high","Sig"]]
-          .style.format({
-              "Control mean":"{:.6g}","Test mean":"{:.6g}",
-              "Δ(Test-Control)":"{:.6g}","p-value":"{:.4g}",
-              "Hedges g":"{:.3g}","CI low":"{:.6g}","CI high":"{:.6g}"
-          }).apply(_highlight_sig, axis=1))
-
-st.dataframe(styled, use_container_width=True)
+st.dataframe(
+    res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-value","Hedges g","CI low","CI high","Sig"]]
+    .style.format({
+        "Control mean":"{:.6g}","Test mean":"{:.6g}",
+        "Δ(Test-Control)":"{:.6g}","p-value":"{:.4g}",
+        "Hedges g":"{:.3g}","CI low":"{:.6g}","CI high":"{:.6g}"
+    }).apply(_highlight_sig, axis=1),
+    use_container_width=True
+)
 
 # ----------------------------
 # 2) 퍼널 분석
@@ -231,90 +221,83 @@ def stage_totals(df):
 
 ctrl_stage = stage_totals(control)
 test_stage = stage_totals(test)
-stages = ["Impressions","Clicks","Purchases","Revenue"]
-ctrl_vals = [ctrl_stage.get(s, np.nan) for s in stages]
-test_vals = [test_stage.get(s, np.nan) for s in stages]
 
-# ✅ (A) 절대값 막대: Matplotlib 버전 (요청하신 디자인)
 st.subheader("Funnel (absolute totals)")
-fig, ax = plt.subplots(figsize=(12, 7), constrained_layout=True)
 
-# y 위치(위→아래 정렬)
-y = np.arange(len(stages))[::-1]
-bar_h = 0.36
-offset = 0.18
+stages = ["Impressions","Clicks","Purchases","Revenue"]
+y = stages[::-1]  # 위에서 아래로 보기 좋게
+ctrl_vals = [ctrl_stage.get(s, np.nan) for s in y]
+test_vals = [test_stage.get(s, np.nan) for s in y]
 
-# 두 그룹 막대
-b1 = ax.barh(y + offset, ctrl_vals[::-1], height=bar_h, label="Control")
-b2 = ax.barh(y - offset, test_vals[::-1],  height=bar_h, label="Test")
+# ▶ Plotly로 Matplotlib 모양 재현 (수평·두께 동일·막대 끝 숫자)
+fig_f = go.Figure()
 
-# x축: 천단위 포맷, 여백
-ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x):,}"))
+fig_f.add_trace(go.Bar(
+    y=[f"{s}" for s in y],
+    x=ctrl_vals,
+    name="Control",
+    orientation="h",
+    offsetgroup="g1",
+    text=[f"{int(v):,}" if pd.notnull(v) else "" for v in ctrl_vals],
+    textposition="outside",
+    insidetextanchor="start",
+))
+
+fig_f.add_trace(go.Bar(
+    y=[f"{s}" for s in y],
+    x=test_vals,
+    name="Test",
+    orientation="h",
+    offsetgroup="g2",
+    text=[f"{int(v):,}" if pd.notnull(v) else "" for v in test_vals],
+    textposition="outside",
+    insidetextanchor="start",
+))
+
+# 스타일: x축 천단위, 여백, 가는 그리드, 범례 오른쪽 밖
 xmax = np.nanmax([np.nanmax(ctrl_vals), np.nanmax(test_vals)])
-ax.set_xlim(0, xmax * 1.12)
+fig_f.update_layout(
+    barmode="group",
+    bargap=0.2,
+    height=450,
+    xaxis=dict(title="Counts / $", tickformat=",d", range=[0, xmax*1.12], gridcolor="rgba(255,255,255,0.2)"),
+    yaxis=dict(categoryorder="array", categoryarray=y),  # 역순 유지
+    title="Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue",
+    legend=dict(orientation="v", x=1.02, y=1.0),
+    margin=dict(r=140)
+)
 
-# y축 라벨
-ax.set_yticks(y)
-ax.set_yticklabels(stages[::-1])
+st.plotly_chart(fig_f, use_container_width=True)
 
-# 얇은 세로 그리드
-ax.grid(axis="x", linestyle=":", alpha=0.4)
-
-# 축/제목/범례
-ax.set_xlabel("Counts / $")
-ax.set_title("Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
-
-# 막대 끝 숫자 표시
-def add_labels(bars, color="black", dx=0.01):
-    for rect in bars:
-        w = rect.get_width()
-        ymid = rect.get_y() + rect.get_height()/2
-        ax.text(w + xmax*dx, ymid, f"{int(round(w)):,}", va="center", ha="left",
-                fontsize=10, color=color)
-
-add_labels(b1, color="black", dx=0.008)
-add_labels(b2, color="black", dx=0.008)
-
-# 범례: 오른쪽 밖
-ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.02), frameon=False)
-
-st.pyplot(fig)
-
-# ✅ (B) 퍼널 플로우: CTR → CVR → Revenue(정규화, 250827.py 스타일)
-st.caption("CTR→CVR→Revenue 흐름 (Revenue 1/10,000 정규화, 라벨 포맷 일치)")
-
+# 퍼널 플로우 (Revenue 1/10,000 정규화 + 라벨)
+st.caption("CTR→CVR→Revenue 흐름 (Revenue 1/10,000 정규화)")
 steps = [s for s in ["CTR","CVR","Revenue"] if s in res_df["Metric"].values]
 if steps:
     mean_ctrl = [float(res_df.loc[res_df['Metric']==s, "Control mean"].iloc[0]) for s in steps]
     mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0])     for s in steps]
-
     if "Revenue" in steps:
         i = steps.index("Revenue")
-        mean_ctrl[i] = mean_ctrl[i] / 10000.0
-        mean_test[i] = mean_test[i] / 10000.0
+        mean_ctrl[i] /= 10000.0
+        mean_test[i] /= 10000.0
 
-    def _lab(v, name):
-        return f"{v:.3f}" if name != "Revenue" else f"{v*10000:.0f}"
-
+    def _lab(v, name): return f"{v:.3f}" if name!="Revenue" else f"{v*10000:.0f}"
     labels_ctrl = [_lab(v, s) for v, s in zip(mean_ctrl, steps)]
     labels_test = [_lab(v, s) for v, s in zip(mean_test, steps)]
 
-    y_idx = list(range(len(steps)))
+    yy = list(range(len(steps)))
     fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=mean_ctrl, y=y_idx, mode="lines+markers+text",
+    fig2.add_trace(go.Scatter(x=mean_ctrl, y=yy, mode="lines+markers+text",
                               name="Control", text=labels_ctrl, textposition="top center",
                               line=dict(color="gray")))
-    fig2.add_trace(go.Scatter(x=mean_test, y=y_idx, mode="lines+markers+text",
+    fig2.add_trace(go.Scatter(x=mean_test, y=yy, mode="lines+markers+text",
                               name="Test", text=labels_test, textposition="bottom center",
                               line=dict(color="royalblue")))
-    fig2.update_yaxes(tickmode="array", tickvals=y_idx,
+    fig2.update_yaxes(tickmode="array", tickvals=yy,
                       ticktext=[f"{s} (norm)" if s=="Revenue" else s for s in steps],
                       autorange="reversed")
-    fig2.update_layout(height=340,
-                       title="Funnel Flow: CTR → CVR → Revenue",
+    fig2.update_layout(height=340, title="Funnel Flow: CTR → CVR → Revenue",
                        xaxis_title="Relative scale (Revenue normalized by 10,000)",
-                       legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98),
-                       xaxis=dict(showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.08)"))
+                       legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98))
     st.plotly_chart(fig2, use_container_width=True)
 
 # ----------------------------
@@ -333,7 +316,6 @@ with tab_ctr:
         ctr_eps = simulate_epsilon_greedy(true_ctr, n_rounds, epsilon, bernoulli=True)
         ctr_ts  = simulate_thompson_bernoulli(true_ctr, n_rounds)
         ctr_ab  = simulate_ab_fixed(true_ctr, n_rounds, bernoulli=True)
-
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=ctr_eps, x=np.arange(n_rounds), name="ε-greedy"))
         fig.add_trace(go.Scatter(y=ctr_ts,  x=np.arange(n_rounds), name="Thompson"))
@@ -348,7 +330,6 @@ with tab_cvr:
         cvr_eps = simulate_epsilon_greedy(true_cvr, n_rounds, epsilon, bernoulli=True)
         cvr_ts  = simulate_thompson_bernoulli(true_cvr, n_rounds)
         cvr_ab  = simulate_ab_fixed(true_cvr, n_rounds, bernoulli=True)
-
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=cvr_eps, x=np.arange(n_rounds), name="ε-greedy"))
         fig.add_trace(go.Scatter(y=cvr_ts,  x=np.arange(n_rounds), name="Thompson"))
@@ -363,7 +344,6 @@ with tab_roas:
         roas_eps = simulate_epsilon_greedy(true_roas, n_rounds, epsilon, bernoulli=False, variance=0.15)
         roas_ts  = simulate_thompson_gaussian(true_roas, n_rounds, obs_var=0.15)
         roas_ab  = simulate_ab_fixed(true_roas, n_rounds, bernoulli=False, variance=0.15)
-
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=roas_eps, x=np.arange(n_rounds), name="ε-greedy"))
         fig.add_trace(go.Scatter(y=roas_ts,  x=np.arange(n_rounds), name="Thompson"))
