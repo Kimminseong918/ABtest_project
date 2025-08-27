@@ -9,6 +9,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
+# --- Matplotlib (있으면 사용, 없으면 Plotly로 폴백) ---
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+    MATPLOTLIB_OK = True
+except Exception:
+    MATPLOTLIB_OK = False
+
 st.set_page_config(page_title="A/B Test Dashboard + MAB", layout="wide")
 
 # ----------------------------
@@ -207,23 +215,89 @@ st.dataframe(
 )
 
 # ----------------------------
-# 2) 퍼널 분석 (✅ 250827.py와 동일: 평균 기반 + Revenue 1/10,000 정규화)
+# 2) 퍼널 분석
 # ----------------------------
-st.header("2) 퍼널 분석 (평균 기반)")
+st.header("2) 퍼널 분석")
 
-# Welch 표의 평균값 사용
+# ---- 2-A. 합계 퍼널 (Matplotlib 스타일) ----
+st.subheader("2-A) Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
+
+def stage_totals(df):
+    d = {}
+    if "# of Impressions" in df.columns: d["Impressions"] = pd.to_numeric(df["# of Impressions"], errors="coerce").sum()
+    if "# of Website Clicks" in df.columns: d["Clicks"] = pd.to_numeric(df["# of Website Clicks"], errors="coerce").sum()
+    if "# of Purchase" in df.columns: d["Purchases"] = pd.to_numeric(df["# of Purchase"], errors="coerce").sum()
+    if "Revenue" in df.columns: d["Revenue"] = pd.to_numeric(df["Revenue"], errors="coerce").sum()
+    return d
+
+ctrl_stage = stage_totals(control)
+test_stage = stage_totals(test)
+stages = ["Impressions", "Clicks", "Purchases", "Revenue"]
+
+ctrl_vals = [ctrl_stage.get(s, 0) for s in stages]
+test_vals = [test_stage.get(s, 0) for s in stages]
+
+if MATPLOTLIB_OK:
+    # --- 당신이 준 코드 그대로 Streamlit에 렌더 ---
+    fig, ax = plt.subplots(figsize=(12, 7), constrained_layout=True)
+
+    y_idx = np.arange(len(stages))[::-1]
+    bar_h = 0.36
+    offset = 0.18
+
+    b1 = ax.barh(y_idx + offset, ctrl_vals[::-1], height=bar_h, label="Control")
+    b2 = ax.barh(y_idx - offset, test_vals[::-1], height=bar_h, label="Test")
+
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x):,}"))
+    xmax = max(max(ctrl_vals), max(test_vals)) if (ctrl_vals and test_vals) else 0
+    ax.set_xlim(0, xmax * 1.12 if xmax > 0 else 1)
+
+    ax.set_yticks(y_idx)
+    ax.set_yticklabels(stages[::-1])
+    ax.grid(axis="x", linestyle=":", alpha=0.4)
+    ax.set_xlabel("Counts / Revenue")
+    ax.set_title("Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
+
+    def add_labels(bars, color="black", dx=0.01):
+        for rect in bars:
+            w = rect.get_width()
+            ymid = rect.get_y() + rect.get_height()/2
+            ax.text(w + (xmax*dx if xmax>0 else 0.02), ymid, f"{int(round(w)):,}",
+                    va="center", ha="left", fontsize=10, color=color)
+
+    add_labels(b1, color="black", dx=0.008)
+    add_labels(b2, color="black", dx=0.008)
+
+    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.02), frameon=False)
+    st.pyplot(fig)
+else:
+    # Matplotlib이 없을 때 Plotly로 유사 스타일 출력
+    fig_f = go.Figure()
+    fig_f.add_trace(go.Bar(y=stages, x=ctrl_vals, name="Control", orientation="h",
+                           text=[f"{int(v):,}" for v in ctrl_vals], textposition="outside"))
+    fig_f.add_trace(go.Bar(y=stages, x=test_vals, name="Test", orientation="h",
+                           text=[f"{int(v):,}" for v in test_vals], textposition="outside"))
+    xmax = max(max(ctrl_vals), max(test_vals)) if (ctrl_vals and test_vals) else 0
+    fig_f.update_layout(
+        barmode="group", bargap=0.2, height=450,
+        xaxis=dict(title="Counts / $", tickformat=",d", range=[0, xmax*1.12 if xmax>0 else 1],
+                   gridcolor="rgba(255,255,255,0.2)"),
+        title="Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue",
+        legend=dict(orientation="v", x=1.02, y=1.0), margin=dict(r=140)
+    )
+    st.plotly_chart(fig_f, use_container_width=True)
+
+# ---- 2-B. 퍼널 플로우 (평균 기반: 250827.py와 동일) ----
+st.subheader("2-B) Funnel Flow (평균 기반, Revenue 1/10,000 정규화)")
 steps = [s for s in ["CTR","CVR","Revenue"] if s in res_df["Metric"].values]
 if steps:
     mean_ctrl = [float(res_df.loc[res_df['Metric']==s, "Control mean"].iloc[0]) for s in steps]
     mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0])     for s in steps]
-
-    # Revenue만 1/10,000 정규화 (250827.py 기준)
     if "Revenue" in steps:
         i = steps.index("Revenue")
         mean_ctrl[i] /= 10000.0
         mean_test[i] /= 10000.0
 
-    # 라벨 포맷: Revenue는 다시 ×10,000하여 원 단위처럼 보이게
     def _lab(v, name): return f"{v:.3f}" if name!="Revenue" else f"{v*10000:.0f}"
     labels_ctrl = [_lab(v, s) for v, s in zip(mean_ctrl, steps)]
     labels_test = [_lab(v, s) for v, s in zip(mean_test, steps)]
@@ -243,8 +317,6 @@ if steps:
                        xaxis_title="Relative scale (Revenue normalized by 10,000)",
                        legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98))
     st.plotly_chart(fig2, use_container_width=True)
-else:
-    st.info("CTR, CVR, Revenue 중 최소 한 개 이상이 필요합니다.")
 
 # ----------------------------
 # 3) 멀티암 밴딧 시뮬레이터
@@ -290,16 +362,13 @@ with tab_roas:
         roas_eps = simulate_epsilon_greedy(true_roas, n_rounds, epsilon, bernoulli=False, variance=0.15)
         roas_ts  = simulate_thompson_gaussian(true_roas, n_rounds, obs_var=0.15)
         roas_ab  = simulate_ab_fixed(true_roas, n_rounds, bernoulli=False, variance=0.15)
-
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=roas_eps, x=np.arange(n_rounds), name="ε-greedy"))
         fig.add_trace(go.Scatter(y=roas_ts,  x=np.arange(n_rounds), name="Thompson"))
-        # ✅ 오타 수정: n.rounds -> n_rounds
         fig.add_trace(go.Scatter(y=roas_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
         fig.update_layout(height=380, title="Cumulative ROAS (simulated)", xaxis_title="Round", yaxis_title="Cumulative")
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
-
 
 # ----------------------------
 # 4) 시계열 비교
@@ -328,4 +397,3 @@ st.download_button("결과 CSV 다운로드", data=csv_buf.getvalue(),
                    file_name="ab_welch_results.csv", mime="text/csv")
 
 st.success("✅ 준비 완료 — control.csv / test.csv 있는 폴더에서 실행하세요.")
-
