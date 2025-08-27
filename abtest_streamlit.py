@@ -319,12 +319,3 @@ if "Date" in control.columns and "Date" in test.columns:
 else:
     st.caption("시계열 그래프는 Date 컬럼이 있을 때 표시됩니다.")
 
-# ----------------------------
-# 5) 결과 다운로드
-# ----------------------------
-csv_buf = io.StringIO()
-res_df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
-st.download_button("결과 CSV 다운로드", data=csv_buf.getvalue(),
-                   file_name="ab_welch_results.csv", mime="text/csv")
-
-st.success("✅ 준비 완료 — control.csv / test.csv 있는 폴더에서 실행하세요.")
