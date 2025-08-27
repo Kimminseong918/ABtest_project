@@ -207,79 +207,23 @@ st.dataframe(
 )
 
 # ----------------------------
-# 2) 퍼널 분석
+# 2) 퍼널 분석 (✅ 250827.py와 동일: 평균 기반 + Revenue 1/10,000 정규화)
 # ----------------------------
-st.header("2) 퍼널 분석")
+st.header("2) 퍼널 분석 (평균 기반)")
 
-def stage_totals(df):
-    d = {}
-    if "# of Impressions" in df.columns: d["Impressions"] = pd.to_numeric(df["# of Impressions"], errors="coerce").sum()
-    if "# of Website Clicks" in df.columns: d["Clicks"] = pd.to_numeric(df["# of Website Clicks"], errors="coerce").sum()
-    if "# of Purchase" in df.columns: d["Purchases"] = pd.to_numeric(df["# of Purchase"], errors="coerce").sum()
-    if "Revenue" in df.columns: d["Revenue"] = pd.to_numeric(df["Revenue"], errors="coerce").sum()
-    return d
-
-ctrl_stage = stage_totals(control)
-test_stage = stage_totals(test)
-
-st.subheader("Funnel (absolute totals)")
-
-stages = ["Impressions","Clicks","Purchases","Revenue"]
-y = stages[::-1]  # 위에서 아래로 보기 좋게
-ctrl_vals = [ctrl_stage.get(s, np.nan) for s in y]
-test_vals = [test_stage.get(s, np.nan) for s in y]
-
-# ▶ Plotly로 Matplotlib 모양 재현 (수평·두께 동일·막대 끝 숫자)
-fig_f = go.Figure()
-
-fig_f.add_trace(go.Bar(
-    y=[f"{s}" for s in y],
-    x=ctrl_vals,
-    name="Control",
-    orientation="h",
-    offsetgroup="g1",
-    text=[f"{int(v):,}" if pd.notnull(v) else "" for v in ctrl_vals],
-    textposition="outside",
-    insidetextanchor="start",
-))
-
-fig_f.add_trace(go.Bar(
-    y=[f"{s}" for s in y],
-    x=test_vals,
-    name="Test",
-    orientation="h",
-    offsetgroup="g2",
-    text=[f"{int(v):,}" if pd.notnull(v) else "" for v in test_vals],
-    textposition="outside",
-    insidetextanchor="start",
-))
-
-# 스타일: x축 천단위, 여백, 가는 그리드, 범례 오른쪽 밖
-xmax = np.nanmax([np.nanmax(ctrl_vals), np.nanmax(test_vals)])
-fig_f.update_layout(
-    barmode="group",
-    bargap=0.2,
-    height=450,
-    xaxis=dict(title="Counts / $", tickformat=",d", range=[0, xmax*1.12], gridcolor="rgba(255,255,255,0.2)"),
-    yaxis=dict(categoryorder="array", categoryarray=y),  # 역순 유지
-    title="Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue",
-    legend=dict(orientation="v", x=1.02, y=1.0),
-    margin=dict(r=140)
-)
-
-st.plotly_chart(fig_f, use_container_width=True)
-
-# 퍼널 플로우 (Revenue 1/10,000 정규화 + 라벨)
-st.caption("CTR→CVR→Revenue 흐름 (Revenue 1/10,000 정규화)")
+# Welch 표의 평균값 사용
 steps = [s for s in ["CTR","CVR","Revenue"] if s in res_df["Metric"].values]
 if steps:
     mean_ctrl = [float(res_df.loc[res_df['Metric']==s, "Control mean"].iloc[0]) for s in steps]
     mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0])     for s in steps]
+
+    # Revenue만 1/10,000 정규화 (250827.py 기준)
     if "Revenue" in steps:
         i = steps.index("Revenue")
         mean_ctrl[i] /= 10000.0
         mean_test[i] /= 10000.0
 
+    # 라벨 포맷: Revenue는 다시 ×10,000하여 원 단위처럼 보이게
     def _lab(v, name): return f"{v:.3f}" if name!="Revenue" else f"{v*10000:.0f}"
     labels_ctrl = [_lab(v, s) for v, s in zip(mean_ctrl, steps)]
     labels_test = [_lab(v, s) for v, s in zip(mean_test, steps)]
@@ -299,6 +243,8 @@ if steps:
                        xaxis_title="Relative scale (Revenue normalized by 10,000)",
                        legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98))
     st.plotly_chart(fig2, use_container_width=True)
+else:
+    st.info("CTR, CVR, Revenue 중 최소 한 개 이상이 필요합니다.")
 
 # ----------------------------
 # 3) 멀티암 밴딧 시뮬레이터
@@ -347,7 +293,7 @@ with tab_roas:
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=roas_eps, x=np.arange(n_rounds), name="ε-greedy"))
         fig.add_trace(go.Scatter(y=roas_ts,  x=np.arange(n_rounds), name="Thompson"))
-        fig.add_trace(go.Scatter(y=roas_ab,  x=np.arange(n_rounds), name="A/B (50:50)", line=dict(dash="dash")))
+        fig.add_trace(go.Scatter(y=roas_ab,  x=np.arange(n.rounds), name="A/B (50:50)", line=dict(dash="dash")))
         fig.update_layout(height=380, title="Cumulative ROAS (simulated)", xaxis_title="Round", yaxis_title="Cumulative")
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
