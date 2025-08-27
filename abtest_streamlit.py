@@ -16,7 +16,9 @@ except Exception:
 
 st.set_page_config(page_title="A/B Test Dashboard + MAB", layout="wide")
 
-
+# -----------------------------
+# 공통 유틸
+# -----------------------------
 def safe_div(a, b):
     a = pd.to_numeric(a, errors="coerce")
     b = pd.to_numeric(b, errors="coerce")
@@ -27,6 +29,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
+    # Date 정리(있을 경우)
     for c in ["Date","DATE","date","ds","Day","day","DATE_TZ"]:
         if c in df.columns:
             try:
@@ -36,6 +39,7 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
 
+    # 파생 지표 생성
     if "CTR" not in df.columns and {"# of Website Clicks", "# of Impressions"} <= set(df.columns):
         df["CTR"] = safe_div(df["# of Website Clicks"], df["# of Impressions"])
     if "CVR" not in df.columns and {"# of Purchase", "# of Website Clicks"} <= set(df.columns):
@@ -51,11 +55,9 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
         df["Frequency"] = safe_div(df["# of Impressions"], df["Reach"])
     return df
 
-
 def welch(a, b):
     a = pd.to_numeric(pd.Series(a), errors="coerce").dropna().values
     b = pd.to_numeric(pd.Series(b), errors="coerce").dropna().values
-
     t, p = stats.ttest_ind(a, b, equal_var=False)
 
     n1, n2 = len(a), len(b)
@@ -90,6 +92,9 @@ def get_true_means(control, test, metric):
     mu_t = float(pd.to_numeric(test[metric], errors="coerce").mean(skipna=True))
     return {"Control": mu_c, "Test": mu_t}
 
+# -----------------------------
+# MAB 시뮬레이터(기존)
+# -----------------------------
 def simulate_epsilon_greedy(true_means, n_rounds, epsilon, bernoulli=True, variance=0.1):
     arms = list(true_means.keys())
     counts = {a: 0 for a in arms}
@@ -148,17 +153,63 @@ def simulate_ab_fixed(true_means, n_rounds, bernoulli=True, variance=0.1):
         total += r; cum.append(total)
     return np.array(cum)
 
+# -----------------------------
+# NEW: Click=100% 퍼널 전환율 섹션용 함수
+# -----------------------------
+CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks"]
+CONTENT_CANDS  = ["Content", "View Content", "ViewContent", "Content Views", "View_Content"]
+CART_CANDS     = ["Cart", "Add to Cart", "AddToCart", "ATC", "Cart Adds", "Add_To_Cart"]
+PURCHASE_CANDS = ["# of Purchase", "Purchases", "Purchase", "Orders"]
 
+def _pick_first(df, cands):
+    for c in cands:
+        if c in df.columns:
+            return c
+    return None
+
+def _resolve_stages(df):
+    cols = {
+        "clicks":   _pick_first(df, CLICK_CANDS),
+        "content":  _pick_first(df, CONTENT_CANDS),
+        "cart":     _pick_first(df, CART_CANDS),
+        "purchase": _pick_first(df, PURCHASE_CANDS),
+    }
+    missing = [k for k,v in cols.items() if v is None]
+    return cols, missing
+
+def _click_based_rates(df):
+    cols, missing = _resolve_stages(df)
+    if missing:
+        return None, missing
+    # 숫자 변환 및 합계
+    for c in cols.values():
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    s_click = df[cols["clicks"]].sum()
+    if s_click <= 0:
+        return None, ["clicks_sum<=0"]
+    rates = {
+        "Click":    100.0,
+        "Content":  float(df[cols["content"]].sum() / s_click * 100.0),
+        "Cart":     float(df[cols["cart"]].sum()     / s_click * 100.0),
+        "Purchase": float(df[cols["purchase"]].sum() / s_click * 100.0),
+    }
+    return rates, []
+
+# -----------------------------
+# 데이터 로딩
+# -----------------------------
 CTRL_PATH = Path("control.csv")
 TEST_PATH = Path("test.csv")
 if not CTRL_PATH.exists() or not TEST_PATH.exists():
-    st.error()
+    st.error("control.csv / test.csv 파일이 필요합니다.")
     st.stop()
 
 control = prepare_df(pd.read_csv(CTRL_PATH))
 test    = prepare_df(pd.read_csv(TEST_PATH))
 
-
+# -----------------------------
+# 대시보드 시작
+# -----------------------------
 st.title("A/B Test Dashboard + MAB")
 
 cols = st.columns(5)
@@ -169,7 +220,9 @@ for i, label in enumerate(["Revenue","ROAS","Frequency","CTR","CVR"]):
         delta = (t - c) / c * 100 if c else np.nan
         cols[i].metric(label, f"{t:,.4g}", f"{delta:+.1f}% vs Control")
 
-
+# -----------------------------
+# 1) Welch t-test
+# -----------------------------
 st.header("1) 기본 가설 검정 (Welch t-test)")
 metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]
 rows = []
@@ -181,24 +234,30 @@ for m in metrics_order:
                          **{"Δ(Test-Control)":r["diff"], "p-value":r["p_value"], "Hedges g":r["hedges_g"],
                             "CI low":r["ci_low"], "CI high":r["ci_high"]}))
 res_df = pd.DataFrame(rows)
-res_df["Sig"] = np.where(res_df["p-value"] < 0.05, "유의미", "")
+if not res_df.empty:
+    res_df["Sig"] = np.where(res_df["p-value"] < 0.05, "유의미", "")
 
-def _highlight_sig(row):
-    return [("background-color:#1f5130" if row["Sig"]=="유의미" else "")]*len(row)
+    def _highlight_sig(row):
+        return [("background-color:#1f5130" if row["Sig"]=="유의미" else "")]*len(row)
 
-st.dataframe(
-    res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-value","Hedges g","CI low","CI high","Sig"]]
-    .style.format({
-        "Control mean":"{:.6g}","Test mean":"{:.6g}",
-        "Δ(Test-Control)":"{:.6g}","p-value":"{:.4g}",
-        "Hedges g":"{:.3g}","CI low":"{:.6g}","CI high":"{:.6g}"
-    }).apply(_highlight_sig, axis=1),
-    use_container_width=True
-)
+    st.dataframe(
+        res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-value","Hedges g","CI low","CI high","Sig"]]
+        .style.format({
+            "Control mean":"{:.6g}","Test mean":"{:.6g}",
+            "Δ(Test-Control)":"{:.6g}","p-value":"{:.4g}",
+            "Hedges g":"{:.3g}","CI low":"{:.6g}","CI high":"{:.6g}"
+        }).apply(_highlight_sig, axis=1),
+        use_container_width=True
+    )
+else:
+    st.info("겹치는 지표가 없어 t-test 표를 표시하지 않습니다.")
 
-
+# -----------------------------
+# 2) 퍼널 분석
+# -----------------------------
 st.header("2) 퍼널 분석")
 
+# 2-A) Stage counts
 st.subheader("2-A) Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
 
 def stage_totals(df):
@@ -218,34 +277,27 @@ test_vals = [test_stage.get(s, 0) for s in stages]
 
 if MATPLOTLIB_OK:
     fig, ax = plt.subplots(figsize=(12, 7), constrained_layout=True)
-
     y_idx = np.arange(len(stages))[::-1]
     bar_h = 0.36
     offset = 0.18
-
     b1 = ax.barh(y_idx + offset, ctrl_vals[::-1], height=bar_h, label="Control")
     b2 = ax.barh(y_idx - offset, test_vals[::-1], height=bar_h, label="Test")
-
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x):,}"))
     xmax = max(max(ctrl_vals), max(test_vals)) if (ctrl_vals and test_vals) else 0
     ax.set_xlim(0, xmax * 1.12 if xmax > 0 else 1)
-
     ax.set_yticks(y_idx)
     ax.set_yticklabels(stages[::-1])
     ax.grid(axis="x", linestyle=":", alpha=0.4)
     ax.set_xlabel("Counts / Revenue")
     ax.set_title("Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
-
     def add_labels(bars, color="black", dx=0.01):
         for rect in bars:
             w = rect.get_width()
             ymid = rect.get_y() + rect.get_height()/2
             ax.text(w + (xmax*dx if xmax>0 else 0.02), ymid, f"{int(round(w)):,}",
                     va="center", ha="left", fontsize=10, color=color)
-
     add_labels(b1, color="black", dx=0.008)
     add_labels(b2, color="black", dx=0.008)
-
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.02), frameon=False)
     st.pyplot(fig)
 else:
@@ -264,9 +316,9 @@ else:
     )
     st.plotly_chart(fig_f, use_container_width=True)
 
-
+# 2-B) Funnel Flow (평균 기반)
 st.subheader("2-B) Funnel Flow (평균 기반, Revenue 1/10,000 정규화)")
-steps = [s for s in ["CTR","CVR","Revenue"] if s in res_df["Metric"].values]
+steps = [s for s in ["CTR","CVR","Revenue"] if not res_df.empty and s in res_df["Metric"].values]
 if steps:
     mean_ctrl = [float(res_df.loc[res_df['Metric']==s, "Control mean"].iloc[0]) for s in steps]
     mean_test = [float(res_df.loc[res_df['Metric']==s, "Test mean"].iloc[0])     for s in steps]
@@ -274,11 +326,9 @@ if steps:
         i = steps.index("Revenue")
         mean_ctrl[i] /= 10000.0
         mean_test[i] /= 10000.0
-
     def _lab(v, name): return f"{v:.3f}" if name!="Revenue" else f"{v*10000:.0f}"
     labels_ctrl = [_lab(v, s) for v, s in zip(mean_ctrl, steps)]
     labels_test = [_lab(v, s) for v, s in zip(mean_test, steps)]
-
     yy = list(range(len(steps)))
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(x=mean_ctrl, y=yy, mode="lines+markers+text",
@@ -294,8 +344,38 @@ if steps:
                        xaxis_title="Relative scale (Revenue normalized by 10,000)",
                        legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98))
     st.plotly_chart(fig2, use_container_width=True)
+else:
+    st.caption("CTR/CVR/Revenue 평균이 있어야 Funnel Flow를 그릴 수 있습니다.")
 
+# 2-C) NEW 클릭=100% 퍼널 전환율
+st.subheader("2-C) Funnel Conversion (Click = 100%)")
+ctrl_rates, miss1 = _click_based_rates(control)
+test_rates, miss2 = _click_based_rates(test)
+if (miss1 or miss2):
+    st.warning(
+        "클릭 기준 퍼널을 위한 컬럼을 찾지 못했습니다.\n"
+        f"- Control 누락: {miss1 or '없음'}\n- Test 누락: {miss2 or '없음'}\n"
+        f"지원 후보:\n"
+        f"  Clicks: {CLICK_CANDS}\n  Content: {CONTENT_CANDS}\n"
+        f"  Cart: {CART_CANDS}\n  Purchase: {PURCHASE_CANDS}"
+    )
+else:
+    stages_c = ["Click","Content","Cart","Purchase"]
+    ctrl_y   = [ctrl_rates[s] for s in stages_c]
+    test_y   = [test_rates[s] for s in stages_c]
+    fig_fc = go.Figure()
+    fig_fc.add_trace(go.Bar(name="Control", x=stages_c, y=ctrl_y,
+                            text=[f"{v:.2f}%" for v in ctrl_y], textposition="outside"))
+    fig_fc.add_trace(go.Bar(name="Test",    x=stages_c, y=test_y,
+                            text=[f"{v:.2f}%" for v in test_y], textposition="outside"))
+    ymax = max(max(ctrl_y), max(test_y))
+    fig_fc.update_layout(barmode="group", height=420, title="Funnel Conversion (Click = 100%)",
+                         yaxis=dict(title="Conversion Rate (%)", range=[0, ymax*1.25]))
+    st.plotly_chart(fig_fc, use_container_width=True)
 
+# -----------------------------
+# 3) MAB 시뮬레이터
+# -----------------------------
 st.header("3) 멀티암 밴딧 시뮬레이터")
 with st.expander("시뮬레이션 옵션", expanded=True):
     n_rounds = st.slider("Rounds", 200, 5000, 2000, 100)
@@ -345,7 +425,9 @@ with tab_roas:
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
 
-
+# -----------------------------
+# 4) 시계열 비교
+# -----------------------------
 st.header("4) 시계열 비교")
 if "Date" in control.columns and "Date" in test.columns:
     metric_ts = st.selectbox(
@@ -360,6 +442,3 @@ if "Date" in control.columns and "Date" in test.columns:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.caption("시계열 그래프는 Date 컬럼이 있을 때 표시됩니다.")
-
-
-
