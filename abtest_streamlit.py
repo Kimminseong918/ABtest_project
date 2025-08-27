@@ -154,7 +154,7 @@ def simulate_ab_fixed(true_means, n_rounds, bernoulli=True, variance=0.1):
     return np.array(cum)
 
 # -----------------------------
-# NEW: Click=100% 퍼널 전환율 섹션용 함수
+# Click=100% 퍼널 전환율용 자동 컬럼 탐색
 # -----------------------------
 CLICK_CANDS    = ["# of Website Clicks", "Clicks", "Click", "Total Clicks"]
 CONTENT_CANDS  = ["Content", "View Content", "ViewContent", "Content Views", "View_Content"]
@@ -257,64 +257,37 @@ else:
 # -----------------------------
 st.header("2) 퍼널 분석")
 
-# 2-A) Stage counts
-st.subheader("2-A) Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
+# 2-A) (수정) 클릭=100% 기준 전환율 막대그래프
+st.subheader("2-A) Funnel Conversion (Click = 100%)")
+ctrl_rates, miss1 = _click_based_rates(control)
+test_rates, miss2 = _click_based_rates(test)
 
-def stage_totals(df):
-    d = {}
-    if "# of Impressions" in df.columns: d["Impressions"] = pd.to_numeric(df["# of Impressions"], errors="coerce").sum()
-    if "# of Website Clicks" in df.columns: d["Clicks"] = pd.to_numeric(df["# of Website Clicks"], errors="coerce").sum()
-    if "# of Purchase" in df.columns: d["Purchases"] = pd.to_numeric(df["# of Purchase"], errors="coerce").sum()
-    if "Revenue" in df.columns: d["Revenue"] = pd.to_numeric(df["Revenue"], errors="coerce").sum()
-    return d
-
-ctrl_stage = stage_totals(control)
-test_stage = stage_totals(test)
-stages = ["Impressions", "Clicks", "Purchases", "Revenue"]
-
-ctrl_vals = [ctrl_stage.get(s, 0) for s in stages]
-test_vals = [test_stage.get(s, 0) for s in stages]
-
-if MATPLOTLIB_OK:
-    fig, ax = plt.subplots(figsize=(12, 7), constrained_layout=True)
-    y_idx = np.arange(len(stages))[::-1]
-    bar_h = 0.36
-    offset = 0.18
-    b1 = ax.barh(y_idx + offset, ctrl_vals[::-1], height=bar_h, label="Control")
-    b2 = ax.barh(y_idx - offset, test_vals[::-1], height=bar_h, label="Test")
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x):,}"))
-    xmax = max(max(ctrl_vals), max(test_vals)) if (ctrl_vals and test_vals) else 0
-    ax.set_xlim(0, xmax * 1.12 if xmax > 0 else 1)
-    ax.set_yticks(y_idx)
-    ax.set_yticklabels(stages[::-1])
-    ax.grid(axis="x", linestyle=":", alpha=0.4)
-    ax.set_xlabel("Counts / Revenue")
-    ax.set_title("Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
-    def add_labels(bars, color="black", dx=0.01):
-        for rect in bars:
-            w = rect.get_width()
-            ymid = rect.get_y() + rect.get_height()/2
-            ax.text(w + (xmax*dx if xmax>0 else 0.02), ymid, f"{int(round(w)):,}",
-                    va="center", ha="left", fontsize=10, color=color)
-    add_labels(b1, color="black", dx=0.008)
-    add_labels(b2, color="black", dx=0.008)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.02), frameon=False)
-    st.pyplot(fig)
-else:
-    fig_f = go.Figure()
-    fig_f.add_trace(go.Bar(y=stages, x=ctrl_vals, name="Control", orientation="h",
-                           text=[f"{int(v):,}" for v in ctrl_vals], textposition="outside"))
-    fig_f.add_trace(go.Bar(y=stages, x=test_vals, name="Test", orientation="h",
-                           text=[f"{int(v):,}" for v in test_vals], textposition="outside"))
-    xmax = max(max(ctrl_vals), max(test_vals)) if (ctrl_vals and test_vals) else 0
-    fig_f.update_layout(
-        barmode="group", bargap=0.2, height=450,
-        xaxis=dict(title="Counts / $", tickformat=",d", range=[0, xmax*1.12 if xmax>0 else 1],
-                   gridcolor="rgba(255,255,255,0.2)"),
-        title="Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue",
-        legend=dict(orientation="v", x=1.02, y=1.0), margin=dict(r=140)
+if miss1 or miss2:
+    st.warning(
+        "클릭 기준 퍼널을 위한 컬럼을 찾지 못했습니다.\n"
+        f"- Control 누락: {miss1 or '없음'}\n- Test 누락: {miss2 or '없음'}\n"
+        f"지원 후보:\n"
+        f"  Clicks: {CLICK_CANDS}\n  Content: {CONTENT_CANDS}\n"
+        f"  Cart: {CART_CANDS}\n  Purchase: {PURCHASE_CANDS}"
     )
-    st.plotly_chart(fig_f, use_container_width=True)
+else:
+    stages_c = ["Click","Content","Cart","Purchase"]
+    ctrl_y   = [ctrl_rates[s] for s in stages_c]
+    test_y   = [test_rates[s] for s in stages_c]
+
+    fig_fc = go.Figure()
+    fig_fc.add_trace(go.Bar(name="Control", x=stages_c, y=ctrl_y,
+                            text=[f"{v:.2f}%" for v in ctrl_y], textposition="outside"))
+    fig_fc.add_trace(go.Bar(name="Test",    x=stages_c, y=test_y,
+                            text=[f"{v:.2f}%" for v in test_y], textposition="outside"))
+    ymax = max(max(ctrl_y), max(test_y))
+    fig_fc.update_layout(
+        barmode="group",
+        height=430,
+        title="Funnel Conversion (Click = 100%)",
+        yaxis=dict(title="Conversion Rate (%)", range=[0, ymax*1.25])
+    )
+    st.plotly_chart(fig_fc, use_container_width=True)
 
 # 2-B) Funnel Flow (평균 기반)
 st.subheader("2-B) Funnel Flow (평균 기반, Revenue 1/10,000 정규화)")
@@ -346,32 +319,6 @@ if steps:
     st.plotly_chart(fig2, use_container_width=True)
 else:
     st.caption("CTR/CVR/Revenue 평균이 있어야 Funnel Flow를 그릴 수 있습니다.")
-
-# 2-C) NEW 클릭=100% 퍼널 전환율
-st.subheader("2-C) Funnel Conversion (Click = 100%)")
-ctrl_rates, miss1 = _click_based_rates(control)
-test_rates, miss2 = _click_based_rates(test)
-if (miss1 or miss2):
-    st.warning(
-        "클릭 기준 퍼널을 위한 컬럼을 찾지 못했습니다.\n"
-        f"- Control 누락: {miss1 or '없음'}\n- Test 누락: {miss2 or '없음'}\n"
-        f"지원 후보:\n"
-        f"  Clicks: {CLICK_CANDS}\n  Content: {CONTENT_CANDS}\n"
-        f"  Cart: {CART_CANDS}\n  Purchase: {PURCHASE_CANDS}"
-    )
-else:
-    stages_c = ["Click","Content","Cart","Purchase"]
-    ctrl_y   = [ctrl_rates[s] for s in stages_c]
-    test_y   = [test_rates[s] for s in stages_c]
-    fig_fc = go.Figure()
-    fig_fc.add_trace(go.Bar(name="Control", x=stages_c, y=ctrl_y,
-                            text=[f"{v:.2f}%" for v in ctrl_y], textposition="outside"))
-    fig_fc.add_trace(go.Bar(name="Test",    x=stages_c, y=test_y,
-                            text=[f"{v:.2f}%" for v in test_y], textposition="outside"))
-    ymax = max(max(ctrl_y), max(test_y))
-    fig_fc.update_layout(barmode="group", height=420, title="Funnel Conversion (Click = 100%)",
-                         yaxis=dict(title="Conversion Rate (%)", range=[0, ymax*1.25]))
-    st.plotly_chart(fig_fc, use_container_width=True)
 
 # -----------------------------
 # 3) MAB 시뮬레이터
