@@ -1,5 +1,3 @@
-# streamlit_app.py
-# -*- coding: utf-8 -*-
 import io
 import numpy as np
 import pandas as pd
@@ -9,7 +7,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-# --- Matplotlib (있으면 사용, 없으면 Plotly로 폴백) ---
 try:
     import matplotlib.pyplot as plt
     from matplotlib.ticker import FuncFormatter
@@ -19,9 +16,7 @@ except Exception:
 
 st.set_page_config(page_title="A/B Test Dashboard + MAB", layout="wide")
 
-# ----------------------------
-# Utilities
-# ----------------------------
+
 def safe_div(a, b):
     a = pd.to_numeric(a, errors="coerce")
     b = pd.to_numeric(b, errors="coerce")
@@ -32,7 +27,6 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    # Date 통일
     for c in ["Date","DATE","date","ds","Day","day","DATE_TZ"]:
         if c in df.columns:
             try:
@@ -42,7 +36,6 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
 
-    # 파생 지표
     if "CTR" not in df.columns and {"# of Website Clicks", "# of Impressions"} <= set(df.columns):
         df["CTR"] = safe_div(df["# of Website Clicks"], df["# of Impressions"])
     if "CVR" not in df.columns and {"# of Purchase", "# of Website Clicks"} <= set(df.columns):
@@ -58,26 +51,22 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
         df["Frequency"] = safe_div(df["# of Impressions"], df["Reach"])
     return df
 
-# --- Welch t-test (250827.py 로직) ---
+
 def welch(a, b):
     a = pd.to_numeric(pd.Series(a), errors="coerce").dropna().values
     b = pd.to_numeric(pd.Series(b), errors="coerce").dropna().values
 
-    # Welch t-test
     t, p = stats.ttest_ind(a, b, equal_var=False)
 
-    # 표본 크기/평균/분산
     n1, n2 = len(a), len(b)
     m1, m2 = a.mean(), b.mean()
     v1, v2 = a.var(ddof=1), b.var(ddof=1)
 
-    # Hedges' g (pooled SD)
     sp = np.sqrt(((n1-1)*v1 + (n2-1)*v2) / (n1+n2-2)) if (n1+n2-2) > 0 else np.nan
     d  = (m1 - m2) / sp if (sp and sp > 0) else np.nan
     J  = 1 - (3/(4*(n1+n2) - 9)) if (n1+n2) > 2 else 1.0
     g  = d * J
 
-    # 95% CI (Welch–Satterthwaite)
     se     = np.sqrt(v1/n1 + v2/n2) if (n1>1 and n2>1) else np.nan
     df_num = (v1/n1 + v2/n2)**2
     df_den = (v1**2/(n1**2*(n1-1))) + (v2**2/(n2**2*(n2-1))) if (n1>1 and n2>1) else np.nan
@@ -94,7 +83,6 @@ def welch(a, b):
         hedges_g=g, ci_low=ci_low, ci_high=ci_high
     )
 
-# -------- MAB helpers --------
 RNG = np.random.default_rng(7)
 
 def get_true_means(control, test, metric):
@@ -160,21 +148,17 @@ def simulate_ab_fixed(true_means, n_rounds, bernoulli=True, variance=0.1):
         total += r; cum.append(total)
     return np.array(cum)
 
-# ----------------------------
-# 데이터 자동 로드
-# ----------------------------
+
 CTRL_PATH = Path("control.csv")
 TEST_PATH = Path("test.csv")
 if not CTRL_PATH.exists() or not TEST_PATH.exists():
-    st.error("현재 폴더에서 control.csv / test.csv 를 찾지 못했습니다. 파일을 같은 폴더에 두고 다시 실행하세요.")
+    st.error()
     st.stop()
 
 control = prepare_df(pd.read_csv(CTRL_PATH))
 test    = prepare_df(pd.read_csv(TEST_PATH))
 
-# ----------------------------
-# KPI (Revenue → ROAS → Frequency → CTR → CVR)
-# ----------------------------
+
 st.title("A/B Test Dashboard + MAB")
 
 cols = st.columns(5)
@@ -185,9 +169,7 @@ for i, label in enumerate(["Revenue","ROAS","Frequency","CTR","CVR"]):
         delta = (t - c) / c * 100 if c else np.nan
         cols[i].metric(label, f"{t:,.4g}", f"{delta:+.1f}% vs Control")
 
-# ----------------------------
-# 1) Welch t-test
-# ----------------------------
+
 st.header("1) 기본 가설 검정 (Welch t-test)")
 metrics_order = ["Revenue","ROAS","Frequency","CTR","CVR"]
 rows = []
@@ -214,12 +196,9 @@ st.dataframe(
     use_container_width=True
 )
 
-# ----------------------------
-# 2) 퍼널 분석
-# ----------------------------
+
 st.header("2) 퍼널 분석")
 
-# ---- 2-A. 합계 퍼널 (Matplotlib 스타일) ----
 st.subheader("2-A) Funnel (Stage counts): Impressions → Clicks → Purchases → Revenue")
 
 def stage_totals(df):
@@ -238,7 +217,6 @@ ctrl_vals = [ctrl_stage.get(s, 0) for s in stages]
 test_vals = [test_stage.get(s, 0) for s in stages]
 
 if MATPLOTLIB_OK:
-    # --- 당신이 준 코드 그대로 Streamlit에 렌더 ---
     fig, ax = plt.subplots(figsize=(12, 7), constrained_layout=True)
 
     y_idx = np.arange(len(stages))[::-1]
@@ -271,7 +249,6 @@ if MATPLOTLIB_OK:
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.02), frameon=False)
     st.pyplot(fig)
 else:
-    # Matplotlib이 없을 때 Plotly로 유사 스타일 출력
     fig_f = go.Figure()
     fig_f.add_trace(go.Bar(y=stages, x=ctrl_vals, name="Control", orientation="h",
                            text=[f"{int(v):,}" for v in ctrl_vals], textposition="outside"))
@@ -287,7 +264,7 @@ else:
     )
     st.plotly_chart(fig_f, use_container_width=True)
 
-# ---- 2-B. 퍼널 플로우 (평균 기반: 250827.py와 동일) ----
+
 st.subheader("2-B) Funnel Flow (평균 기반, Revenue 1/10,000 정규화)")
 steps = [s for s in ["CTR","CVR","Revenue"] if s in res_df["Metric"].values]
 if steps:
@@ -318,9 +295,7 @@ if steps:
                        legend=dict(yanchor="top", y=0.98, xanchor="right", x=0.98))
     st.plotly_chart(fig2, use_container_width=True)
 
-# ----------------------------
-# 3) 멀티암 밴딧 시뮬레이터
-# ----------------------------
+
 st.header("3) 멀티암 밴딧 시뮬레이터")
 with st.expander("시뮬레이션 옵션", expanded=True):
     n_rounds = st.slider("Rounds", 200, 5000, 2000, 100)
@@ -370,9 +345,7 @@ with tab_roas:
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Control ROAS ≈ {true_roas['Control']:.3g}, Test ROAS ≈ {true_roas['Test']:.3g}")
 
-# ----------------------------
-# 4) 시계열 비교
-# ----------------------------
+
 st.header("4) 시계열 비교")
 if "Date" in control.columns and "Date" in test.columns:
     metric_ts = st.selectbox(
@@ -388,12 +361,5 @@ if "Date" in control.columns and "Date" in test.columns:
 else:
     st.caption("시계열 그래프는 Date 컬럼이 있을 때 표시됩니다.")
 
-# ----------------------------
-# 5) 결과 다운로드
-# ----------------------------
-csv_buf = io.StringIO()
-res_df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
-st.download_button("결과 CSV 다운로드", data=csv_buf.getvalue(),
-                   file_name="ab_welch_results.csv", mime="text/csv")
 
-st.success("✅ 준비 완료 — control.csv / test.csv 있는 폴더에서 실행하세요.")
+
