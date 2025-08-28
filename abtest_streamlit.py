@@ -252,17 +252,20 @@ rows = []
 for m in metrics_order:
     if m in control.columns and m in test.columns:
         r = welch(test[m], control[m])
-        rows.append(dict(Metric=m,
-                         **{"Control mean":r["mean_control"], "Test mean":r["mean_test"]},
-                         **{"Δ(Test-Control)":r["diff"], "p-value":r["p_value"], "Hedges g":r["hedges_g"],
-                            "CI low":r["ci_low"], "CI high":r["ci_high"]}))
+        rows.append(dict(
+            Metric=m,
+            **{"Control mean":r["mean_control"], "Test mean":r["mean_test"]},
+            **{"Δ(Test-Control)":r["diff"], "p-value":r["p_value"], "Hedges g":r["hedges_g"],
+               "CI low":r["ci_low"], "CI high":r["ci_high"]}
+        ))
+
 res_df = pd.DataFrame(rows)
 if not res_df.empty:
     res_df["Sig"] = np.where(res_df["p-value"] < 0.05, "유의미", "")
 
     def _highlight_sig(row):
-    return [("background-color:#0d47a1; color:white;" if row["Sig"]=="유의미" else "")]*len(row)
-
+        # 🔵 유의미한 행을 진한 파란색 배경 + 흰 글자로 표시
+        return [("background-color:#0d47a1; color:white;" if row["Sig"] == "유의미" else "")] * len(row)
 
     st.dataframe(
         res_df[["Metric","Control mean","Test mean","Δ(Test-Control)","p-value","Hedges g","CI low","CI high","Sig"]]
